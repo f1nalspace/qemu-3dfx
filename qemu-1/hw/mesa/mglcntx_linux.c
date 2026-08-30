@@ -297,6 +297,71 @@ struct xgamma {
     uint16_t b[MAX_RAMP_SIZE];
 };
 
+/* The guest gamma ramp used to reach the host through XF86VidModeSetGammaRamp
+ * on DefaultScreen -- that is the entire X display, every monitor, not the QEMU
+ * window. A guest game that fades in from black on startup and crashes while
+ * doing so leaves the host desktop unreadably dark; the ramp was only restored
+ * in MGLWndRelease(), which such a crash never reaches.
+ *
+ * X11 has no per-window gamma ramp, so passing the ramp through is always an
+ * intrusion on the whole screen. It is off by default now and has to be asked
+ * for explicitly:
+ *
+ *     QEMU_3DFX_HOST_GAMMA=1
+ *
+ * Second point: when it is asked for, the user's original ramp is saved and
+ * written back, instead of overwriting it with a computed identity ramp. Doing
+ * the latter loses a calibrated or dimmed host display.
+ */
+static int HostGammaPassthroughEnabled(void)
+{
+    static int alreadyChecked, isEnabled;
+
+    if (!alreadyChecked) {
+        const char *setting = getenv("QEMU_3DFX_HOST_GAMMA");
+        isEnabled = (setting && (setting[0] == '1'))? 1:0;
+        alreadyChecked = 1;
+    }
+    return isEnabled;
+}
+
+static struct xgamma savedHostRamp;
+static int savedHostRampSize;
+
+/* What the guest last asked for. Remembered so that a game reading its own ramp
+ * back gets its own values -- even though the host screen was never touched. */
+static struct wgamma guestRequestedRamp;
+static int guestRequestedRampValid;
+
+static void SaveHostGammaRamp(void)
+{
+    int rampsz = 0;
+
+    if (!xvidmode || savedHostRampSize)
+        return;
+    XF86VidModeGetGammaRampSize(dpy, DefaultScreen(dpy), &rampsz);
+    if ((rampsz <= 0) || (rampsz > MAX_RAMP_SIZE))
+        return;
+    if (XF86VidModeGetGammaRamp(dpy, DefaultScreen(dpy), rampsz,
+            savedHostRamp.r, savedHostRamp.g, savedHostRamp.b))
+        savedHostRampSize = rampsz;
+}
+
+static void MesaInitGammaRamp(void);
+
+static void RestoreHostGammaRamp(void)
+{
+    if (!xvidmode)
+        return;
+    if (!savedHostRampSize) {
+        MesaInitGammaRamp();
+        return;
+    }
+    XF86VidModeSetGammaRamp(dpy, DefaultScreen(dpy), savedHostRampSize,
+        savedHostRamp.r, savedHostRamp.g, savedHostRamp.b);
+    XSync(dpy, False);
+}
+
 static void MesaInitGammaRamp(void)
 {
     struct xgamma GammaRamp;
@@ -400,7 +465,7 @@ void MGLWndRelease(void)
             glXMakeContextCurrent(dpy, None, None, NULL);
             glXDestroyContext(dpy, ctx[0]);
         }
-        MesaInitGammaRamp();
+        RestoreHostGammaRamp();
         XFree(xvi);
         XCloseDisplay(dpy);
         mesa_release_window();
@@ -498,7 +563,7 @@ static int MGLPresetPixelFormat(void)
         fbid, xvi->visualid, cAuxBuffers, cSampleBuf[0], cSampleBuf[1], xvidmode,
         ContextUseSRGB()? "sRGB":"");
     DPRINTF("..using %s", (xglFuncs.SwapIntervalEXT)? "GLX_EXT_swap_control":"GLX_MESA_swap_control");
-    MesaInitGammaRamp();
+    SaveHostGammaRamp();
     XFree(fbcnf);
     XFlush(dpy);
     return 1;
@@ -908,6 +973,20 @@ void MGLFuncHandler(const char *name)
         struct xgamma xRamp;
         struct wgamma *wRamp = (struct wgamma *)&argsp[2];
         int rampsz;
+        if (!HostGammaPassthroughEnabled()) {
+            if (guestRequestedRampValid)
+                memcpy(wRamp, &guestRequestedRamp, sizeof(guestRequestedRamp));
+            else {
+                for (int i = 0; i < 0x100; i++) {
+                    uint16_t linearValue = (uint16_t)(((i << 8) | i) & 0xFFFFU);
+                    wRamp->r[i] = linearValue;
+                    wRamp->g[i] = linearValue;
+                    wRamp->b[i] = linearValue;
+                }
+            }
+            argsp[0] = 1;
+            return;
+        }
         if (xvidmode && !ContextUseSRGB())
             XF86VidModeGetGammaRampSize(dpy, DefaultScreen(dpy), &rampsz);
         else rampsz = 0;
@@ -946,6 +1025,12 @@ void MGLFuncHandler(const char *name)
         struct xgamma xRamp;
         struct wgamma *wRamp = (struct wgamma *)&argsp[0];
         int rampsz;
+        if (!HostGammaPassthroughEnabled()) {
+            memcpy(&guestRequestedRamp, wRamp, sizeof(guestRequestedRamp));
+            guestRequestedRampValid = 1;
+            argsp[0] = 1;
+            return;
+        }
         if (xvidmode && !ContextUseSRGB())
             XF86VidModeGetGammaRampSize(dpy, DefaultScreen(dpy), &rampsz);
         else rampsz = 0;
