@@ -1,0 +1,10 @@
+# Von uns erzeugt, gehoert nicht ins Repo:
+# der entpackte QEMU-Quellbaum, sein Archiv und die Bauverzeichnisse.
+/qemu-*.tar.xz
+/qemu-*.*/
+/build/
+wrappers/*/build/
+
+# Reste von patch(1)
+*.orig
+*.rej
