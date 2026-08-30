@@ -50,12 +50,19 @@ stamp.o:
 	@echo -n "  REV $@"; cat $(@:o=c) | sed "s/.*rev_\[\]\ =//;s/;//"
 	@$(CC) -c -o $@ $(@:o=c)
 
-fxlib:
+# C_OBJS live in $(FXLIB), not in $(SRCDIR). Expressed as a static pattern rule
+# so make knows how to build them. As a bare recipe they were invisible to the
+# dependency graph: on a clean tree the first make failed with "no rule to make
+# target fxhook.o" and only a second run linked, and under make -j the link
+# could start while fxlib was still writing an object, failing with undefined
+# references to fxTick, HookEntryHook and friends.
+$(C_OBJS): %.o: $(FXLIB)/%.c
+	@echo "  CC  $@"
+	@$(CC) $(CFLAGS) -c -o $@ $<
+
+.PHONY: fxlib
+fxlib: $(C_OBJS)
 	@if [ "$$MSYSTEM" != "MINGW32" ]; then echo "Error: MSYSTEM == $$MSYSTEM"; exit 1; fi
-	@echo "  CC  $(C_OBJS)"
-	@for i in $(C_OBJS); do \
-		$(CC) $(CFLAGS) -c -o $$i $(FXLIB)/`echo $$i | sed "s/\.o/\.c/"`; \
-	done
 
 %.o: $(SRCDIR)/%.c
 	@echo "  CC  $@"
