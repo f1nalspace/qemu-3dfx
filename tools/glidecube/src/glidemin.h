@@ -48,13 +48,25 @@ typedef FxU32 GrCombineOther_t;
 typedef FxU32 GrCullMode_t;
 typedef FxU32 GrDepthBufferMode_t;
 typedef FxU32 GrCmpFnc_t;
+typedef FxU32 GrChipID_t;
+typedef FxU32 GrTexTable_t;
+typedef FxU32 GrTextureFormat_t;
+typedef FxI32 GrLOD_t;
+typedef FxI32 GrAspectRatio_t;
+typedef FxU32 GrMipMapMode_t;
+typedef FxU32 GrTextureFilterMode_t;
+typedef FxU32 GrTextureClampMode_t;
+typedef FxI32 GrChromakeyMode_t;
+typedef FxU32 GrAlphaBlendFnc_t;
 
 #define GR_WDEPTHVALUE_FARTHEST 0xFFFF
 #define GR_BUFFER_BACKBUFFER    0x1
 #define GR_CMP_LESS             0x1
+#define GR_CMP_ALWAYS           0x7
 #define GR_COLORFORMAT_ARGB     0x0
 #define GR_COLORFORMAT_ABGR     0x1
 #define GR_CULL_DISABLE         0x0
+#define GR_DEPTHBUFFER_DISABLE  0x0
 #define GR_DEPTHBUFFER_WBUFFER  0x2
 #define GR_ORIGIN_UPPER_LEFT    0x0
 
@@ -69,6 +81,50 @@ typedef FxU32 GrCmpFnc_t;
 #define GR_RESOLUTION_512x384   0x3
 #define GR_RESOLUTION_640x480   0x7
 #define GR_RESOLUTION_800x600   0x8
+
+/* --- textures, palette, chroma key, alpha blending ---------------------- *
+ *
+ * The values are the Glide 2.x ones from sdk2_glide.h. Glide 3 numbers its
+ * levels of detail the other way round; both wrappers here speak Glide 2, so
+ * the Glide 2 numbering is the one that applies.
+ */
+#define GR_TMU0                         0x0
+
+#define GR_MIPMAPLEVELMASK_EVEN         0x1
+#define GR_MIPMAPLEVELMASK_ODD          0x2
+#define GR_MIPMAPLEVELMASK_BOTH         0x3
+
+#define GR_LOD_256                      0x0
+#define GR_LOD_128                      0x1
+#define GR_LOD_64                       0x2
+#define GR_LOD_32                       0x3
+
+#define GR_ASPECT_1x1                   0x3
+
+#define GR_TEXFMT_P_8                   0x5
+#define GR_TEXFMT_RGB_565               0xa
+#define GR_TEXFMT_ARGB_8888             0x10
+
+#define GR_TEXTABLE_NCC0                0x0
+#define GR_TEXTABLE_PALETTE             0x2
+
+#define GR_MIPMAP_DISABLE               0x0
+#define GR_TEXTUREFILTER_POINT_SAMPLED  0x0
+#define GR_TEXTUREFILTER_BILINEAR       0x1
+#define GR_TEXTURECLAMP_WRAP            0x0
+#define GR_TEXTURECLAMP_CLAMP           0x1
+
+#define GR_CHROMAKEY_DISABLE            0x0
+#define GR_CHROMAKEY_ENABLE             0x1
+
+#define GR_BLEND_ZERO                   0x0
+#define GR_BLEND_SRC_ALPHA              0x1
+#define GR_BLEND_ONE                    0x4
+#define GR_BLEND_ONE_MINUS_SRC_ALPHA    0x5
+
+#define GR_COMBINE_FUNCTION_SCALE_OTHER 0x3
+#define GR_COMBINE_FACTOR_ONE           0x8
+#define GR_COMBINE_OTHER_TEXTURE        0x1
 
 #define GR_SSTTYPE_VOODOO    0
 #define GR_SSTTYPE_SST96     1
@@ -94,6 +150,16 @@ typedef struct {
     float oow;          /* 1/w, for the w buffer and texturing */
     GrTmuVertex tmuvtx[GLIDE_NUM_TMU];
 } GrVertex;
+
+/* The texture descriptor Glide hands to grTexDownloadMipMap and grTexSource.
+ * Field order and size have to match the wrapper's wrTexInfo exactly. */
+typedef struct {
+    GrLOD_t           smallLod;
+    GrLOD_t           largeLod;
+    GrAspectRatio_t   aspectRatio;
+    GrTextureFormat_t format;
+    void             *data;
+} GrTexInfo;
 
 typedef int GrSstType;
 
@@ -164,6 +230,24 @@ extern void   GLIDE_CALL grConstantColorValue(GrColor_t value);
 extern void   GLIDE_CALL grDepthBufferMode(GrDepthBufferMode_t mode);
 extern void   GLIDE_CALL grDepthBufferFunction(GrCmpFnc_t function);
 extern void   GLIDE_CALL grDepthMask(FxBool enable);
+
+extern FxU32  GLIDE_CALL grTexMinAddress(GrChipID_t tmu);
+extern FxU32  GLIDE_CALL grTexMaxAddress(GrChipID_t tmu);
+extern FxU32  GLIDE_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo *info);
+extern void   GLIDE_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo *info);
+extern void   GLIDE_CALL grTexDownloadTable(GrChipID_t tmu, GrTexTable_t type, void *data);
+extern void   GLIDE_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo *info);
+extern void   GLIDE_CALL grTexCombine(GrChipID_t tmu,
+                                      GrCombineFunction_t rgb_function, GrCombineFactor_t rgb_factor,
+                                      GrCombineFunction_t alpha_function, GrCombineFactor_t alpha_factor,
+                                      FxBool rgb_invert, FxBool alpha_invert);
+extern void   GLIDE_CALL grTexFilterMode(GrChipID_t tmu, GrTextureFilterMode_t minfilter, GrTextureFilterMode_t magfilter);
+extern void   GLIDE_CALL grTexClampMode(GrChipID_t tmu, GrTextureClampMode_t s_clamp, GrTextureClampMode_t t_clamp);
+extern void   GLIDE_CALL grTexMipMapMode(GrChipID_t tmu, GrMipMapMode_t mode, FxBool lodBlend);
+extern void   GLIDE_CALL grChromakeyMode(GrChromakeyMode_t mode);
+extern void   GLIDE_CALL grChromakeyValue(GrColor_t value);
+extern void   GLIDE_CALL grAlphaBlendFunction(GrAlphaBlendFnc_t rgb_sf, GrAlphaBlendFnc_t rgb_df,
+                                              GrAlphaBlendFnc_t alpha_sf, GrAlphaBlendFnc_t alpha_df);
 
 #if defined(__cplusplus)
 }
