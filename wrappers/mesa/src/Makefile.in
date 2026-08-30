@@ -5,9 +5,9 @@ CC=$(CROSS)gcc
 RC=windres
 DLLTOOL=dlltool
 STRIP=strip
-CFLAGS=-march=x86-64-v2 -mtune=generic -mfpmath=sse -O3
-CFLAGS+=-pipe -I$(QEMU_SRC_DIR)/hw/mesa -I$(FXLIB) -Wall -Werror -fomit-frame-pointer
-CFLAGS+=-fuse-linker-plugin -flto=auto
+CFLAGS=-march=pentium2 -mtune=core2 -mcrtdll=msvcrt-os -O3
+CFLAGS+=-pipe -I$(QEMU_SRC_DIR)/hw/mesa -I$(FXLIB) -Wall -fomit-frame-pointer
+#CFLAGS+=-fuse-linker-plugin -flto=auto
 LDFLAGS=-static-libgcc
 LDFLAGS+=-Wl,--disable-auto-image-base,--no-seh,--dynamicbase,--nxcompat
 SRCDIR=../src
