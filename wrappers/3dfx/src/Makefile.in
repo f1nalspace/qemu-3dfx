@@ -6,7 +6,7 @@ CC=$(CROSS)gcc
 RC=windres
 DLLTOOL=dlltool
 STRIP=strip
-CFLAGS=-march=pentium2 -mtune=core2 -mcrtdll=msvcrt-os -O3
+CFLAGS=-march=pentium3 -mtune=core2 -mcrtdll=msvcrt-os -O3
 CFLAGS+=-pipe -I$(QEMU_SRC_DIR)/hw/3dfx -I$(FXLIB) -D__REV__=\"$(GIT)\" -Wall -fomit-frame-pointer
 #CFLAGS+=-fuse-linker-plugin -flto=auto
 LDFLAGS=-static-libgcc

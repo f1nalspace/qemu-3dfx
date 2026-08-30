@@ -22,10 +22,11 @@ BUILD   := build
 CFLAGS_COMMON := -std=c89 -Wall -Wextra -O2 -Isrc
 
 CROSS       := i686-w64-mingw32-
-# -march=pentium2 because of the guest CPU, -mcrtdll=msvcrt-os because of
-# Windows 98: without the second switch the toolchain links against the UCRT,
-# which does not exist on Windows 9x.
-CFLAGS_WIN  := $(CFLAGS_COMMON) -march=pentium2 -mtune=core2 -mcrtdll=msvcrt-os
+# -march=pentium3 matches what the guest CPU actually is (qemu -cpu pentium3):
+# SSE1, but none of SSE2/SSE3/SSSE3/SSE4.x/POPCNT that -march=x86-64-v2 would
+# emit. -mcrtdll=msvcrt-os because of Windows 98: without it the toolchain links
+# against the UCRT, which does not exist on Windows 9x.
+CFLAGS_WIN  := $(CFLAGS_COMMON) -march=pentium3 -mtune=core2 -mcrtdll=msvcrt-os
 
 .PHONY: all host win32 implib run clean
 
