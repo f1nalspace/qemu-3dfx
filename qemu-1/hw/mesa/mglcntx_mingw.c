@@ -369,6 +369,10 @@ int MGLMakeCurrent(uint32_t cntxRC, int level)
 
 int MGLSwapBuffers(void)
 {
+    /* The guest presents through the window only here. A guest driver that renders
+     * offscreen never reaches this point, and the 2D output keeps the screen.
+     */
+    mesa_gl_takeover();
     MGLActivateHandler(1, 0);
     MesaBlitScale();
     return SwapBuffers(hDC);
@@ -783,6 +787,12 @@ void MGLActivateHandler(const int i, const int d)
     static int last;
 
     if (i != last) {
+        /* The guest has not presented through the window yet -- the 2D output still
+         * owns the screen and has to keep refreshing. Leave the latch alone, the
+         * first SwapBuffers gets here again.
+         */
+        if (i && mesa_gl_takeover_deferred())
+            return;
         last = i;
         DPRINTF_COND(GLFuncTrace(), "wm_activate %s%-32d", (d)? "dfr ":"imm ", i);
         if (i) {

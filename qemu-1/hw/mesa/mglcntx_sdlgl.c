@@ -479,6 +479,10 @@ int MGLMakeCurrent(uint32_t cntxRC, int level)
 
 int MGLSwapBuffers(void)
 {
+    /* The guest presents through the window only here. A guest driver that renders
+     * offscreen never reaches this point, and the 2D output keeps the screen.
+     */
+    mesa_gl_takeover();
     MGLActivateHandler(1, 0);
     MesaBlitScale();
     SDL_GL_SwapWindow(window);

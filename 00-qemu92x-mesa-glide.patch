@@ -146,17 +146,17 @@ diff -Nru ../orig/qemu-9.2.2/include/ui/console.h ./include/ui/console.h
 +    /* passthrough */
 +    bool passthrough;
  } QemuUIInfo;
-
+ 
  /* cursor data format is 32bit RGBA */
 @@ -381,6 +383,7 @@
                                 void *opaque);
  void graphic_console_close(QemuConsole *con);
-
+ 
 +void graphic_hw_passthrough(QemuConsole *con, bool passthrough);
  void graphic_hw_update(QemuConsole *con);
  void graphic_hw_update_done(QemuConsole *con);
  void graphic_hw_invalidate(QemuConsole *con);
-@@ -475,4 +478,19 @@
+@@ -475,4 +478,21 @@
                                        size_t size,
                                        Error **errp);
  
@@ -169,6 +169,8 @@ diff -Nru ../orig/qemu-9.2.2/include/ui/console.h ./include/ui/console.h
 +
 +/* mglcntx.c */
 +void mesa_renderer_stat(const int);
++void mesa_gl_takeover(void);
++int mesa_gl_takeover_deferred(void);
 +void mesa_prepare_window(int, int, int, void *);
 +void mesa_release_window(void);
 +void mesa_cursor_define(int, int, int, int, const void *);
@@ -176,6 +178,7 @@ diff -Nru ../orig/qemu-9.2.2/include/ui/console.h ./include/ui/console.h
 +int mesa_gui_fullscreen(int *);
 +
  #endif
+
 diff -Nru ../orig/qemu-9.2.2/meson.build ./meson.build
 --- ../orig/qemu-9.2.2/meson.build
 +++ ./meson.build
@@ -320,10 +323,18 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  #include "qemu/cutils.h"
  #include "ui/console.h"
  #include "ui/input.h"
-@@ -568,6 +569,29 @@
+@@ -135,6 +136,7 @@
+     if (scon->real_renderer) {
+         SDL_DestroyRenderer(scon->real_renderer);
+         scon->real_renderer = NULL;
++        scon->texture = NULL;
+     }
+     SDL_DestroyWindow(scon->real_window);
+     scon->real_window = NULL;
+@@ -568,6 +570,29 @@
      qemu_input_event_sync();
  }
-
+ 
 +static int fxui_grab_val(const int grab)
 +{
 +    static int fxui_grab;
@@ -350,7 +361,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static void handle_windowevent(SDL_Event *ev)
  {
      struct sdl2_console *scon = get_scon_from_window(ev->window.windowID);
-@@ -592,6 +616,7 @@
+@@ -592,6 +617,7 @@
          sdl2_redraw(scon);
          break;
      case SDL_WINDOWEVENT_FOCUS_GAINED:
@@ -358,7 +369,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          /* fall through */
      case SDL_WINDOWEVENT_ENTER:
          if (!gui_grab && (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled)) {
-@@ -607,7 +632,8 @@
+@@ -607,7 +633,8 @@
          scon->ignore_hotkeys = get_mod_state();
          break;
      case SDL_WINDOWEVENT_FOCUS_LOST:
@@ -368,7 +379,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
              sdl_grab_end(scon);
          }
          break;
-@@ -774,6 +800,367 @@
+@@ -774,6 +801,442 @@
      SDL_QuitSubSystem(SDL_INIT_VIDEO);
  }
  
@@ -397,20 +408,63 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +        SDL_SetWindowPosition(scon->real_window, scon->x, scon->y);
 +}
 +
++/* State of the hand-over of the window from QEMU's 2D output to the guest's GL
++ * context. It stays DEFERRED until the guest really presents -- a guest driver that
++ * renders offscreen never presents, and the 2D output keeps the screen.
++ */
++#define GL_TAKEOVER_DONE        0
++#define GL_TAKEOVER_DEFERRED    1
++#define GL_TAKEOVER_SCHEDULED   2
++
 +static struct sdl_console_cb {
 +    QEMUTimer *ts;
 +    SDL_Surface *icon;
 +    struct sdl2_console *scon;
 +    int glide_on_mesa, gui_saved_res, render_pause;
 +    int res, msaa, alpha, dtimer, GLon12;
++    int gl_takeover_pending;
 +    void *hnwnd, *opaque;
 +    void (*cwnd_fn)(void *, void *, void *);
 +} scon_cb;
++/* Hand the window over to the guest's GL context for good: the SDL 2D output is torn
++ * down and the GL context owns the drawable from here on.
++ */
++static void wndproc_fxui_gl_takeover(struct sdl_console_cb *s)
++{
++    SDL_DestroyTexture(s->scon->texture);
++    SDL_DestroyRenderer(s->scon->real_renderer);
++    s->scon->real_renderer = NULL;
++    s->scon->texture = NULL;
++    s->render_pause = 1;
++    s->gl_takeover_pending = GL_TAKEOVER_DONE;
++    s->scon->winctx = SDL_GL_GetCurrentContext();
++    if (!s->scon->winctx)
++        s->scon->winctx = SDL_GL_CreateContext(s->scon->real_window);
++    if (!s->scon->winctx) {
++        error_report("%s", SDL_GetError());
++        exit(1);
++    }
++    SDL_GL_MakeCurrent(s->scon->real_window, NULL);
++}
++static void sched_wndproc(void *opaque);
++static void sched_gl_takeover(struct sdl_console_cb *s)
++{
++    s->gl_takeover_pending = GL_TAKEOVER_SCHEDULED;
++    s->res = -1;
++    s->render_pause = 1;
++    if (!s->ts)
++        s->ts = timer_new_ms(QEMU_CLOCK_REALTIME, &sched_wndproc, s);
++    timer_mod(s->ts, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
++}
 +static void wndproc_fxui_stat(struct sdl_console_cb *s)
 +{
 +    if (s->render_pause) {
-+        SDL_DestroyTexture(s->scon->texture);
-+        s->scon->texture = NULL;
++        if (s->gl_takeover_pending)
++            wndproc_fxui_gl_takeover(s);
++        else {
++            SDL_DestroyTexture(s->scon->texture);
++            s->scon->texture = NULL;
++        }
 +    }
 +    else {
 +        if (!s->scon->real_renderer)
@@ -465,21 +519,23 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +                break;
 +        }
 +    }
-+    SDL_DestroyTexture(s->scon->texture);
-+    SDL_DestroyRenderer(s->scon->real_renderer);
-+    s->scon->real_renderer = NULL;
-+    s->scon->texture = NULL;
-+    s->render_pause = 1;
-+    s->scon->winctx = SDL_GL_GetCurrentContext();
-+    if (!s->scon->winctx)
-+        s->scon->winctx = SDL_GL_CreateContext(s->scon->real_window);
-+    if (!s->scon->winctx) {
-+        error_report("%s", SDL_GetError());
-+        exit(1);
-+    }
-+    if (!s->opaque)
++    /* Glide always presents through the window, so it takes the drawable right away.
++     * A GL guest may never present at all -- the DirectDraw HAL of vmdisp9x renders
++     * into an FBO and reads the result back into guest video memory. Keep the 2D
++     * output alive for it and take the window over on its first SwapBuffers.
++     */
++    if (s->opaque)
++        wndproc_fxui_gl_takeover(s);
++    else {
++        s->gl_takeover_pending = GL_TAKEOVER_DEFERRED;
++        /* sdl_gui_restart() above may have replaced window and renderer, and a fresh
++         * renderer has no texture yet -- without one the 2D output stays black.
++         */
++        if (!s->scon->real_renderer)
++            s->scon->real_renderer = SDL_CreateRenderer(s->scon->real_window, -1, 0);
++        sdl2_2d_switch(&s->scon->dcl, s->scon->surface);
 +        s->cwnd_fn(s->scon->real_window, s->hnwnd, s->opaque);
-+    SDL_GL_MakeCurrent(s->scon->real_window, NULL);
++    }
 +}
 +static void wndproc_fxui_release(struct sdl_console_cb *s)
 +{
@@ -496,6 +552,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    }
 +    sdl2_2d_switch(&s->scon->dcl, s->scon->surface);
 +    s->render_pause = 0;
++    s->gl_takeover_pending = GL_TAKEOVER_DONE;
 +    timer_del(s->ts);
 +    timer_free(s->ts);
 +    s->ts = NULL;
@@ -538,6 +595,12 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    if (activate == s->render_pause)
 +        return;
 +
++    /* glFlush() and glFinish() ask for the GL window as well. While the takeover is
++     * deferred, only a real SwapBuffers may claim it.
++     */
++    if (activate && (s->gl_takeover_pending == GL_TAKEOVER_DEFERRED))
++        return;
++
 +    sdl_display_valid(feat);
 +    s->scon = &sdl2_console[0];
 +    s->res = -1;
@@ -557,9 +620,11 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    s->scon = &sdl2_console[0];
 +    s->opaque = opaque;
 +    s->cwnd_fn = (void (*)(void *, void *, void *))cwnd_fn;
-+    if (s->render_pause) {
++    if (s->render_pause || s->gl_takeover_pending) {
 +        s->glide_on_mesa = 1;
 +        s->gui_saved_res = 0;
++        if (s->gl_takeover_pending == GL_TAKEOVER_DEFERRED)
++            sched_gl_takeover(s);
 +    }
 +    else {
 +        SDL_GetWindowSize(s->scon->real_window, &scr_w, &scr_h);
@@ -642,6 +707,27 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    sdl_renderer_stat(activate, "mesapt");
 +    if (s->glide_on_mesa && !activate)
 +        glide_renderer_stat(1);
++}
++
++/* Called on the guest's SwapBuffers -- the moment a GL guest really presents through
++ * the window. Until then the 2D output keeps the screen.
++ */
++void mesa_gl_takeover(void)
++{
++    struct sdl_console_cb *s = &scon_cb;
++
++    if (s->gl_takeover_pending == GL_TAKEOVER_DEFERRED)
++        sched_gl_takeover(s);
++}
++
++/* True as long as the 2D output still owns the screen. The guest's activate handler
++ * asks before it stops QEMU's own display refresh.
++ */
++int mesa_gl_takeover_deferred(void)
++{
++    struct sdl_console_cb *s = &scon_cb;
++
++    return (s->gl_takeover_pending == GL_TAKEOVER_DEFERRED);
 +}
 +
 +void mesa_prepare_window(int msaa, int alpha, int scale_x, void *cwnd_fn)
@@ -736,10 +822,10 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static const DisplayChangeListenerOps dcl_2d_ops = {
      .dpy_name             = "sdl2-2d",
      .dpy_gfx_update       = sdl2_2d_update,
-@@ -834,6 +1221,10 @@
-
+@@ -834,6 +1297,10 @@
+ 
      assert(o->type == DISPLAY_TYPE_SDL);
-
+ 
 +#ifdef __linux__
 +    if (!display_opengl && !g_getenv("SDL_VIDEODRIVER"))
 +        SDL_SetHint(SDL_HINT_VIDEODRIVER, "x11");
@@ -747,11 +833,11 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      if (SDL_GetHintBoolean("QEMU_ENABLE_SDL_LOGGING", SDL_FALSE)) {
          SDL_LogSetAllPriority(SDL_LOG_PRIORITY_VERBOSE);
      }
-@@ -926,6 +1317,7 @@
+@@ -926,6 +1393,7 @@
      g_free(dir);
      if (icon) {
          SDL_SetWindowIcon(sdl2_console[0].real_window, icon);
 +        scon_cb.icon = icon;
      }
-
+ 
      mouse_mode_notifier.notify = sdl_mouse_mode_change;
