@@ -353,6 +353,77 @@ static void InitClientStates(MesaPTState *s)
     GLExtUncapped(s->mglCntxWGL);
 }
 
+/* Frame counter for the host side, switched on with QEMU_3DFX_FPS=1.
+ *
+ * A frame rate measured inside the guest cannot be trusted here: QEMU runs the guest's
+ * GL calls on the vCPU thread, so the guest stands still while the host draws and its
+ * own clock falls behind (the slow motion of docs/LOG.md [227], [228]). This counts the
+ * guest's frames but times them with the host's clock.
+ *
+ * Two kinds are counted separately because the two routes present differently: a GL
+ * application swaps buffers, while the DirectDraw HAL of vmdisp9x reads its FBO back
+ * into guest video memory and never swaps.
+ *
+ * Comment out MESA_FPS_DIAGNOSTICS to compile this out entirely, this block and its
+ * two call sites in processArgs() and mesapt_write().
+ */
+#define MESA_FPS_DIAGNOSTICS
+
+#ifdef MESA_FPS_DIAGNOSTICS
+#define MESA_FPS_REPORT_INTERVAL_NS (1000LL * 1000LL * 1000LL)
+
+/* A frame-sized read back marks one finished picture. Anything smaller belongs to a
+ * surface lock and says nothing about the frame rate.
+ */
+#define MESA_FULL_FRAME_PIXELS (640 * 480)
+
+typedef enum {
+    MESA_FRAME_READPIXELS_FULL,
+    MESA_FRAME_READPIXELS_SMALL,
+    MESA_FRAME_SWAPBUFFERS,
+    MESA_FRAME_KINDS
+} MesaFrameKind;
+
+static int mesa_fps_last_width, mesa_fps_last_height;
+
+static void mesa_fps_count(const MesaFrameKind kind)
+{
+    static const char *const kind_name[MESA_FRAME_KINDS] = {
+        "ReadPixels full", "ReadPixels small", "SwapBuffers" };
+    static unsigned frames[MESA_FRAME_KINDS];
+    static int64_t window_start_ns;
+    static int enabled = -1;
+
+    if (enabled == -1) {
+        const char *setting = getenv("QEMU_3DFX_FPS");
+        enabled = (setting && setting[0] != '0')? 1:0;
+    }
+    if (!enabled)
+        return;
+
+    const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    if (!window_start_ns)
+        window_start_ns = now_ns;
+    frames[kind]++;
+
+    const int64_t elapsed_ns = now_ns - window_start_ns;
+    if (elapsed_ns >= MESA_FPS_REPORT_INTERVAL_NS) {
+        const double elapsed_seconds = (double)elapsed_ns / MESA_FPS_REPORT_INTERVAL_NS;
+        for (int i = 0; i < MESA_FRAME_KINDS; i++) {
+            const time_t wall_clock = time(NULL);
+            char stamp[16];
+            strftime(stamp, sizeof(stamp), "%H:%M:%S", localtime(&wall_clock));
+            if (frames[i])
+                fprintf(stderr, "qemu-3dfx fps: %s %-16s %6.1f   (%u in %.2f s, host clock, last %dx%d)\n",
+                        stamp, kind_name[i], frames[i] / elapsed_seconds, frames[i], elapsed_seconds,
+                        mesa_fps_last_width, mesa_fps_last_height);
+            frames[i] = 0;
+        }
+        window_start_ns = now_ns;
+    }
+}
+#endif /* MESA_FPS_DIAGNOSTICS */
+
 static void dispTimerProc(void *opaque)
 {
     MesaPTState *s = opaque;
@@ -1248,6 +1319,19 @@ static void processArgs(MesaPTState *s)
             break;
         case FEnum_glReadPixels:
             s->parg[2] = (s->pixPackBuf == 0)? VAL(s->fbtm_ptr):s->arg[6];
+#ifdef MESA_FPS_DIAGNOSTICS
+            do {
+                const int readpixels_width = s->arg[2], readpixels_height = s->arg[3];
+                const int readpixels_pixels = readpixels_width * readpixels_height;
+                if (readpixels_pixels >= MESA_FULL_FRAME_PIXELS) {
+                    mesa_fps_last_width = readpixels_width;
+                    mesa_fps_last_height = readpixels_height;
+                    mesa_fps_count(MESA_FRAME_READPIXELS_FULL);
+                }
+                else
+                    mesa_fps_count(MESA_FRAME_READPIXELS_SMALL);
+            } while (0);
+#endif /* MESA_FPS_DIAGNOSTICS */
             break;
         case FEnum_glRectdv:
             s->datacb = 2*sizeof(double);
@@ -2355,6 +2439,9 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                     DPRINTF_COND((SwapFpsLimit(swapRet[0]) && swapRet[0] != 0xFEU),
                             "Guest GL Swap limit [ %d FPS ]", GetFpsLimit());
                     swapRet[0] = MGLSwapBuffers()? ((GetFpsLimit() << 1) | 1):0;
+#ifdef MESA_FPS_DIAGNOSTICS
+                    mesa_fps_count(MESA_FRAME_SWAPBUFFERS);
+#endif /* MESA_FPS_DIAGNOSTICS */
                     MGLMouseWarp(swapRet[1]);
                     dispTimerSched(s->dispTimer, &s->crashRC);
                 } while(0);
