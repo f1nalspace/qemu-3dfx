@@ -19,12 +19,12 @@ CROSS := i686-w64-mingw32-
 # unions, and those only became standard in C11. As a GCC extension they work in
 # gnu89 as well -- and Visual C++ 6.0 knows them anyway.
 #
-# -march=pentium3 matches what the guest CPU actually is (qemu -cpu pentium3):
+# -march=prescott matches what the guest CPU actually is (qemu -cpu coreduo, SSE3 is the ceiling):
 # SSE1, but none of SSE2/SSE3/SSSE3/SSE4.x/POPCNT that -march=x86-64-v2 would
 # emit. -mcrtdll=msvcrt-os because of Windows 98: without it the toolchain links
 # against the UCRT, which does not exist on Windows 9x. The same two switches as
 # in glidecube and in the qemu-3dfx wrapper.
-CFLAGS := -std=gnu89 -Wall -Wextra -O2 -march=pentium3 -mtune=core2 -mcrtdll=msvcrt-os
+CFLAGS := -std=gnu89 -Wall -Wextra -O2 -march=prescott -mtune=core2 -mcrtdll=msvcrt-os
 
 # Direct3DCreate8 is fetched at run time with LoadLibrary, so d3d8 is NOT
 # linked against. Only GDI and USER are needed.

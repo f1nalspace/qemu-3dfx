@@ -21,7 +21,7 @@ BUILD   := build
 CFLAGS_COMMON := -std=c89 -Wall -Wextra -O2 -I$(GLIDEMIN)
 
 CROSS       := i686-w64-mingw32-
-CFLAGS_WIN  := $(CFLAGS_COMMON) -march=pentium3 -mtune=core2 -mcrtdll=msvcrt-os
+CFLAGS_WIN  := $(CFLAGS_COMMON) -march=prescott -mtune=core2 -mcrtdll=msvcrt-os
 
 .PHONY: all host win32 implib run clean
 

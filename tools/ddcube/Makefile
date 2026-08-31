@@ -10,10 +10,10 @@ BUILD := build
 
 CROSS := i686-w64-mingw32-
 
-# -march=pentium3 matches the guest CPU (qemu -cpu pentium3), -mcrtdll=msvcrt-os
+# -march=prescott matches the guest CPU (qemu -cpu coreduo, SSE3 is the ceiling), -mcrtdll=msvcrt-os
 # because of Windows 98: without it the toolchain links against the UCRT, which
 # does not exist on Windows 9x. Same two traps as in the other tools.
-CFLAGS := -std=gnu99 -Wall -Wextra -O2 -march=pentium3 -mtune=core2 -mcrtdll=msvcrt-os
+CFLAGS := -std=gnu99 -Wall -Wextra -O2 -march=prescott -mtune=core2 -mcrtdll=msvcrt-os
 
 .PHONY: all clean
 
