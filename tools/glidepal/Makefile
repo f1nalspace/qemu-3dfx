@@ -10,7 +10,7 @@
 
 QEMU3DFX     := $(abspath ../..)
 PROJECT_ROOT := $(abspath ../../..)
-OPENGLIDE   ?= $(PROJECT_ROOT)/qemu-xtra/build-openglide/.libs
+OPENGLIDE   ?= $(PROJECT_ROOT)/openglide/build/.libs
 WRAPPER_DLL ?= $(QEMU3DFX)/wrappers/3dfx/build/glide2x.dll
 GLIDEMIN    := $(abspath ../glidecube/src)
 

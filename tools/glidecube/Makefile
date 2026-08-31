@@ -7,11 +7,11 @@
 # The third route, Visual C++ 6.0 inside the guest, is described in README.md.
 
 # glide2x.dll comes from this repository. OpenGLide does not -- it lives in
-# kjliew/qemu-xtra, expected as a sibling checkout next to this one. Override
+# f1nalspace/openglide, expected as a sibling checkout next to this one. Override
 # either path on the command line if your layout differs.
 QEMU3DFX     := $(abspath ../..)
 PROJECT_ROOT := $(abspath ../../..)
-OPENGLIDE   ?= $(PROJECT_ROOT)/qemu-xtra/build-openglide/.libs
+OPENGLIDE   ?= $(PROJECT_ROOT)/openglide/build/.libs
 WRAPPER_DLL ?= $(QEMU3DFX)/wrappers/3dfx/build/glide2x.dll
 
 SRC     := src/glidecube.c
