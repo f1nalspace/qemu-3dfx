@@ -1,7 +1,7 @@
 FXLIB=../../fxlib
 CROSS?=
 CC=$(CROSS)gcc
-CFLAGS=-march=x86-64-v2 -mtune=generic -mfpmath=sse
+CFLAGS=-march=prescott -mtune=core2 -mfpmath=sse -mcrtdll=msvcrt-os
 CFLAGS+=-pipe -I$(FXLIB) -Wall -Wextra -Werror
 OUTDIR?=build
 
