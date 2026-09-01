@@ -9,3 +9,11 @@ tools/*/build/
 # patch(1) leftovers
 *.orig
 *.rej
+
+# Runtime files OpenGLide writes into the working directory, plus the texture
+# diagnostics output. All of them are regenerated on the next run.
+OpenGLid.ini
+OpenGLid.log
+OpenGLid.tex
+OpenGLid.pal
+OpenGLid-*.ppm
