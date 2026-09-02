@@ -21,7 +21,7 @@
 #ifndef _MGL_VERTARRY_H
 #define _MGL_VERTARRY_H
 
-void *LookupVertex(uint32_t, uint32_t);
+void *LookupVertex(uint32_t, uint32_t, uint32_t *);
 int FreeVertex(void);
 
 #endif //_MGL_VERTARRY_H

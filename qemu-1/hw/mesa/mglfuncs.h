@@ -11,6 +11,10 @@ typedef struct {
     int type;
     int stride;
     void *ptr;
+    /* Bytes still available from ptr on. Zero when ptr is an offset into a bound array
+     * buffer instead of a host pointer, which is the case PushVertexArray must skip.
+     */
+    unsigned int room;
 } vtxarry_t;
 
 #define PAGE_SIZE       0x1000

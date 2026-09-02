@@ -32,7 +32,7 @@ typedef struct _vertArry {
 
 static PVERTARRY vertexArry = NULL;
 
-static void *LookupVertArry(PVERTARRY *pArry, uint32_t handle, uint32_t size)
+static void *LookupVertArry(PVERTARRY *pArry, uint32_t handle, uint32_t size, uint32_t *room)
 {
     PVERTARRY p = *pArry;
 
@@ -71,6 +71,12 @@ static void *LookupVertArry(PVERTARRY *pArry, uint32_t handle, uint32_t size)
         }
     }
 
+    /* The allocation runs from p->ptr for (tagHi - tagLo) bytes, so what is left from the
+     * pointer we hand out is tagHi - handle. Callers need it to bound their writes.
+     */
+    if (room)
+        *room = p->tagHi - handle;
+
     return p->ptr + (handle - p->tagLo);
 }
 
@@ -89,6 +95,6 @@ static int FreeVertArry(PVERTARRY *pArry)
     return cnt;
 }
 
-void *LookupVertex(uint32_t handle, uint32_t size) { return LookupVertArry(&vertexArry, handle, size); }
+void *LookupVertex(uint32_t handle, uint32_t size, uint32_t *room) { return LookupVertArry(&vertexArry, handle, size, room); }
 int FreeVertex(void) { return FreeVertArry(&vertexArry); }
 
