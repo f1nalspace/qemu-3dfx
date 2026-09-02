@@ -2364,6 +2364,13 @@ void PT_CALL glDebugMessageInsertAMD(uint32_t arg0, uint32_t arg1, uint32_t arg2
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glDebugMessageInsertAMD;
 }
 void PT_CALL glDebugMessageInsertARB(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
+    /* The host-side diagnostics of OHST_DMESG come through here, and both hook patchers
+     * emit them from wglSetPixelFormat -- before any context exists. Without one, pt[0]
+     * holds no valid pointer and the write below faults, which killed every GL program
+     * after the first one in a session. See docs/LOG.md [365] and [372].
+     */
+    if (!currGLRC)
+        return;
     fifoAddData(0, arg5, arg4);
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; pt[6] = arg5; 
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glDebugMessageInsertARB;
