@@ -379,7 +379,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
              sdl_grab_end(scon);
          }
          break;
-@@ -774,6 +801,442 @@
+@@ -774,6 +801,455 @@
      SDL_QuitSubSystem(SDL_INIT_VIDEO);
  }
  
@@ -406,6 +406,12 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +        SDL_SetWindowIcon(scon->real_window, icon);
 +    if (!gui_fullscreen)
 +        SDL_SetWindowPosition(scon->real_window, scon->x, scon->y);
++    /* The pointer grab is restored from SDL_WINDOWEVENT_FOCUS_GAINED, and a window the
++     * user never clicked may not be given focus at all by a window manager that prevents
++     * focus stealing. Ask for it, or the cursor escapes on every game start and exit and
++     * the guest stops seeing the mouse -- docs/LOG.md [379].
++     */
++    SDL_RaiseWindow(scon->real_window);
 +}
 +
 +/* State of the hand-over of the window from QEMU's 2D output to the guest's GL
@@ -654,6 +660,13 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +        s->gui_saved_res = 0;
 +        if (s->ts)
 +            timer_mod(s->ts, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
++    }
++    else {
++        /* Glide borrowed the window from a GL session that was still holding it, so there
++         * was no 2D resolution to save. That session is gone by the time we get here, and
++         * without this the screen keeps the last Glide frame forever -- docs/LOG.md [377].
++         */
++        sdl_renderer_stat(0, "glidept");
 +    }
 +}
 +
