@@ -86,12 +86,53 @@ typedef struct MesaPTState
 
 } MesaPTState;
 
-static void vtxarry_init(vtxarry_t *varry, int size, int type, int stride, void *ptr)
+static void vtxarry_init(vtxarry_t *varry, int size, int type, int stride, void *ptr, uint32_t room)
 {
     varry->size = size;
     varry->type = type;
     varry->stride = stride;
     varry->ptr = ptr;
+    varry->room = room;
+}
+
+/* Resolve a guest array address. With no array buffer bound it is backed by the host-side
+ * vertex cache and room says how much of that is left from the pointer on. With one bound
+ * the value is an offset into that buffer, not a pointer, so room stays zero.
+ */
+static void vtxarry_init_guest(vtxarry_t *varry, int size, int type, int stride, MesaPTState *s, uint32_t handle)
+{
+    uint32_t room = 0;
+    void *ptr;
+
+    if (s->arrayBuf == 0)
+        ptr = LookupVertex(handle, s->szVertCache, &room);
+    else
+        ptr = (void *)(uintptr_t)handle;
+
+    vtxarry_init(varry, size, type, stride, ptr, room);
+}
+
+/* Copy one array slice into the vertex cache. The guest picks both stride and start, so the
+ * destination offset is guest data as much as the length is: bounding only the length let a
+ * large start write past the allocation and took QEMU down, see docs/LOG.md [368].
+ * Returns non-zero when the slice did not fit, which the callers report.
+ */
+static int vtxarry_push(const vtxarry_t *varry, int cbElem, int start, int len, const void *src)
+{
+    const int64_t destOffset = (int64_t)cbElem * start;
+    int64_t roomLeft;
+
+    if ((destOffset < 0) || (len < 0) || (destOffset >= varry->room))
+        return 1;
+
+    roomLeft = (int64_t)varry->room - destOffset;
+    if (len > roomLeft) {
+        memcpy((uint8_t *)varry->ptr + destOffset, src, roomLeft);
+        return 1;
+    }
+
+    memcpy((uint8_t *)varry->ptr + destOffset, src, len);
+    return 0;
 }
 
 static void vtxarry_ptr_reset(MesaPTState *s)
@@ -203,8 +244,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
         cbElem = (s->Interleaved.stride)? s->Interleaved.stride:s->Interleaved.size;
         n = (cbElem*(end - start) + s->Interleaved.size);
         n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
-        ovfl = ((n << 2) > (s->szVertCache >> 1))? 1:0;
-        memcpy(s->Interleaved.ptr + (cbElem*start), varry_ptr, ((ovfl)? (s->szVertCache >> 1):(n << 2)));
+        ovfl = vtxarry_push(&s->Interleaved, cbElem, start, (n << 2), varry_ptr);
         varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
         s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
         if (ovfl)
@@ -216,8 +256,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             cbElem = (s->Color.stride)? s->Color.stride:szgldata(s->Color.size,s->Color.type);
             n = cbElem*(end - start) + szgldata(s->Color.size,s->Color.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
-            ovfl = ((n << 2) > (s->szVertCache >> 1))? 1:0;
-            memcpy(s->Color.ptr + (cbElem*start), varry_ptr, ((ovfl)? (s->szVertCache >> 1):(n << 2)));
+            ovfl = vtxarry_push(&s->Color, cbElem, start, (n << 2), varry_ptr);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -227,8 +266,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             cbElem = (s->EdgeFlag.stride)? s->EdgeFlag.stride:szgldata(s->EdgeFlag.size,s->EdgeFlag.type);
             n = cbElem*(end - start) + szgldata(s->EdgeFlag.size,s->EdgeFlag.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
-            ovfl = ((n << 2) > (s->szVertCache >> 1))? 1:0;
-            memcpy(s->EdgeFlag.ptr + (cbElem*start), varry_ptr, ((ovfl)? (s->szVertCache >> 1):(n << 2)));
+            ovfl = vtxarry_push(&s->EdgeFlag, cbElem, start, (n << 2), varry_ptr);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -238,8 +276,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             cbElem = (s->Index.stride)? s->Index.stride:szgldata(s->Index.size,s->Index.type);
             n = cbElem*(end - start) + szgldata(s->Index.size,s->Index.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
-            ovfl = ((n << 2) > (s->szVertCache >> 1))? 1:0;
-            memcpy(s->Index.ptr + (cbElem*start), varry_ptr, ((ovfl)? (s->szVertCache >> 1):(n << 2)));
+            ovfl = vtxarry_push(&s->Index, cbElem, start, (n << 2), varry_ptr);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -249,8 +286,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             cbElem = (s->Normal.stride)? s->Normal.stride:szgldata(s->Normal.size,s->Normal.type);
             n = cbElem*(end - start) + szgldata(s->Normal.size,s->Normal.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
-            ovfl = ((n << 2) > (s->szVertCache >> 1))? 1:0;
-            memcpy(s->Normal.ptr + (cbElem*start), varry_ptr, ((ovfl)? (s->szVertCache >> 1):(n << 2)));
+            ovfl = vtxarry_push(&s->Normal, cbElem, start, (n << 2), varry_ptr);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -261,8 +297,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
                 cbElem = (s->TexCoord[i].stride)? s->TexCoord[i].stride:szgldata(s->TexCoord[i].size,s->TexCoord[i].type);
                 n = cbElem*(end - start) + szgldata(s->TexCoord[i].size,s->TexCoord[i].type);
                 n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
-                ovfl = ((n << 2) > (s->szVertCache >> 1))? 1:0;
-                memcpy(s->TexCoord[i].ptr + (cbElem*start), varry_ptr, ((ovfl)? (s->szVertCache >> 1):(n << 2)));
+                ovfl = vtxarry_push(&s->TexCoord[i], cbElem, start, (n << 2), varry_ptr);
                 varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
                 s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
                 if (ovfl)
@@ -273,8 +308,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             cbElem = (s->Vertex.stride)? s->Vertex.stride:szgldata(s->Vertex.size,s->Vertex.type);
             n = cbElem*(end - start) + szgldata(s->Vertex.size,s->Vertex.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
-            ovfl = ((n << 2) > (s->szVertCache >> 1))? 1:0;
-            memcpy(s->Vertex.ptr + (cbElem*start), varry_ptr, ((ovfl)? (s->szVertCache >> 1):(n << 2)));
+            ovfl = vtxarry_push(&s->Vertex, cbElem, start, (n << 2), varry_ptr);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -284,8 +318,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             cbElem = (s->SecondaryColor.stride)? s->SecondaryColor.stride:szgldata(s->SecondaryColor.size,s->SecondaryColor.type);
             n = cbElem*(end - start) + szgldata(s->SecondaryColor.size,s->SecondaryColor.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
-            ovfl = ((n << 2) > (s->szVertCache >> 1))? 1:0;
-            memcpy(s->SecondaryColor.ptr + (cbElem*start), varry_ptr, ((ovfl)? (s->szVertCache >> 1):(n << 2)));
+            ovfl = vtxarry_push(&s->SecondaryColor, cbElem, start, (n << 2), varry_ptr);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -295,8 +328,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             cbElem = (s->FogCoord.stride)? s->FogCoord.stride:szgldata(s->FogCoord.size,s->FogCoord.type);
             n = cbElem*(end - start) + szgldata(s->FogCoord.size,s->FogCoord.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
-            ovfl = ((n << 2) > (s->szVertCache >> 1))? 1:0;
-            memcpy(s->FogCoord.ptr + (cbElem*start), varry_ptr, ((ovfl)? (s->szVertCache >> 1):(n << 2)));
+            ovfl = vtxarry_push(&s->FogCoord, cbElem, start, (n << 2), varry_ptr);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -306,8 +338,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             cbElem = (s->Weight.stride)? s->Weight.stride:szgldata(s->Weight.size,s->Weight.type);
             n = cbElem*(end - start) + szgldata(s->Weight.size,s->Weight.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
-            ovfl = ((n << 2) > (s->szVertCache >> 1))? 1:0;
-            memcpy(s->Weight.ptr + (cbElem*start), varry_ptr, ((ovfl)? (s->szVertCache >> 1):(n << 2)));
+            ovfl = vtxarry_push(&s->Weight, cbElem, start, (n << 2), varry_ptr);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -318,8 +349,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
                 cbElem = (s->GenAttrib[i].stride)? s->GenAttrib[i].stride:szgldata(s->GenAttrib[i].size,s->GenAttrib[i].type);
                 n = cbElem*(end - start) + szgldata(s->GenAttrib[i].size,s->GenAttrib[i].type);
                 n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
-                ovfl = ((n << 2) > (s->szVertCache >> 1))? 1:0;
-                memcpy(s->GenAttrib[i].ptr + (cbElem*start), varry_ptr, ((ovfl)? (s->szVertCache >> 1):(n << 2)));
+                ovfl = vtxarry_push(&s->GenAttrib[i], cbElem, start, (n << 2), varry_ptr);
                 varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
                 s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
                 if (ovfl)
@@ -429,6 +459,17 @@ static void dispTimerProc(void *opaque)
     MesaPTState *s = opaque;
     s->perfs.last();
     MGLActivateHandler(0, 1);
+}
+
+/* Synchronization is not presentation. glFinish() and glFlush() used to renew the display
+ * watchdog and re-claim the GL window, so a game that was minimized but kept syncing held
+ * the screen forever and showed a frozen frame -- docs/LOG.md [374]. Only wglSwapBuffers
+ * and WM_ACTIVATE may claim it now. The crash watchdog still counts them as guest life:
+ * crashRC is what repairs a leaked FIFO pointer and refcount after a hard exit.
+ */
+static void markGuestGLAlive(MesaPTState *s)
+{
+    s->crashRC = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
 }
 
 static void dispTimerSched(QEMUTimer *ts, int64_t *crashRC)
@@ -636,68 +677,53 @@ static void processArgs(MesaPTState *s)
             break;
         case FEnum_glColorPointer:
         case FEnum_glColorPointerEXT:
-            vtxarry_init(&s->Color, s->arg[0], s->arg[1], s->arg[2], (s->arrayBuf == 0)?
-                LookupVertex((s->FEnum == FEnum_glColorPointer)? s->arg[3]:s->arg[4], s->szVertCache):
-                (void *)(uintptr_t)((s->FEnum == FEnum_glColorPointer)? s->arg[3]:s->arg[4]));
+            vtxarry_init_guest(&s->Color, s->arg[0], s->arg[1], s->arg[2], s, (s->FEnum == FEnum_glColorPointer)? s->arg[3]:s->arg[4]);
             s->parg[3] = VAL(s->Color.ptr);
             s->parg[0] = VAL(s->Color.ptr);
             break;
         case FEnum_glEdgeFlagPointer:
         case FEnum_glEdgeFlagPointerEXT:
-            vtxarry_init(&s->EdgeFlag, 1, GL_BYTE, s->arg[0], (s->arrayBuf == 0)?
-                LookupVertex((s->FEnum == FEnum_glEdgeFlagPointer)? s->arg[1]:s->arg[2], s->szVertCache):
-                (void *)(uintptr_t)((s->FEnum == FEnum_glEdgeFlagPointer)? s->arg[1]:s->arg[2]));
+            vtxarry_init_guest(&s->EdgeFlag, 1, GL_BYTE, s->arg[0], s, (s->FEnum == FEnum_glEdgeFlagPointer)? s->arg[1]:s->arg[2]);
             s->parg[1] = VAL(s->EdgeFlag.ptr);
             s->parg[2] = VAL(s->EdgeFlag.ptr);
             break;
         case FEnum_glIndexPointer:
         case FEnum_glIndexPointerEXT:
-            vtxarry_init(&s->Index, 1, s->arg[0], s->arg[1], (s->arrayBuf == 0)?
-                LookupVertex((s->FEnum == FEnum_glIndexPointer)? s->arg[2]:s->arg[3], s->szVertCache):
-                (void *)(uintptr_t)((s->FEnum == FEnum_glIndexPointer)? s->arg[2]:s->arg[3]));
+            vtxarry_init_guest(&s->Index, 1, s->arg[0], s->arg[1], s, (s->FEnum == FEnum_glIndexPointer)? s->arg[2]:s->arg[3]);
             s->parg[2] = VAL(s->Index.ptr);
             s->parg[3] = VAL(s->Index.ptr);
             break;
         case FEnum_glNormalPointer:
         case FEnum_glNormalPointerEXT:
-            vtxarry_init(&s->Normal, 3, s->arg[0], s->arg[1], (s->arrayBuf == 0)?
-                LookupVertex((s->FEnum == FEnum_glNormalPointer)? s->arg[2]:s->arg[3], s->szVertCache):
-                (void *)(uintptr_t)((s->FEnum == FEnum_glNormalPointer)? s->arg[2]:s->arg[3]));
+            vtxarry_init_guest(&s->Normal, 3, s->arg[0], s->arg[1], s, (s->FEnum == FEnum_glNormalPointer)? s->arg[2]:s->arg[3]);
             s->parg[2] = VAL(s->Normal.ptr);
             s->parg[3] = VAL(s->Normal.ptr);
             break;
         case FEnum_glTexCoordPointer:
         case FEnum_glTexCoordPointerEXT:
-            vtxarry_init(&s->TexCoord[s->texUnit], s->arg[0], s->arg[1], s->arg[2], (s->arrayBuf == 0)?
-                LookupVertex((s->FEnum == FEnum_glTexCoordPointer)? s->arg[3]:s->arg[4], s->szVertCache):
-                (void *)(uintptr_t)((s->FEnum == FEnum_glTexCoordPointer)? s->arg[3]:s->arg[4]));
+            vtxarry_init_guest(&s->TexCoord[s->texUnit], s->arg[0], s->arg[1], s->arg[2], s, (s->FEnum == FEnum_glTexCoordPointer)? s->arg[3]:s->arg[4]);
             s->parg[3] = VAL(s->TexCoord[s->texUnit].ptr);
             s->parg[0] = VAL(s->TexCoord[s->texUnit].ptr);
             break;
         case FEnum_glVertexPointer:
         case FEnum_glVertexPointerEXT:
-            vtxarry_init(&s->Vertex, s->arg[0], s->arg[1], s->arg[2], (s->arrayBuf == 0)?
-                LookupVertex((s->FEnum == FEnum_glVertexPointer)? s->arg[3]:s->arg[4], s->szVertCache):
-                (void *)(uintptr_t)((s->FEnum == FEnum_glVertexPointer)? s->arg[3]:s->arg[4]));
+            vtxarry_init_guest(&s->Vertex, s->arg[0], s->arg[1], s->arg[2], s, (s->FEnum == FEnum_glVertexPointer)? s->arg[3]:s->arg[4]);
             s->parg[3] = VAL(s->Vertex.ptr);
             s->parg[0] = VAL(s->Vertex.ptr);
             break;
         case FEnum_glSecondaryColorPointer:
         case FEnum_glSecondaryColorPointerEXT:
-            vtxarry_init(&s->SecondaryColor, s->arg[0], s->arg[1], s->arg[2], (s->arrayBuf == 0)?
-                LookupVertex(s->arg[3], s->szVertCache):(void *)(uintptr_t)s->arg[3]);
+            vtxarry_init_guest(&s->SecondaryColor, s->arg[0], s->arg[1], s->arg[2], s, s->arg[3]);
             s->parg[3] = VAL(s->SecondaryColor.ptr);
             break;
         case FEnum_glFogCoordPointer:
         case FEnum_glFogCoordPointerEXT:
-            vtxarry_init(&s->FogCoord, 1, s->arg[0], s->arg[1], (s->arrayBuf == 0)?
-                LookupVertex(s->arg[2], s->szVertCache):(void *)(uintptr_t)s->arg[2]);
+            vtxarry_init_guest(&s->FogCoord, 1, s->arg[0], s->arg[1], s, s->arg[2]);
             s->parg[2] = VAL(s->FogCoord.ptr);
             break;
         case FEnum_glVertexWeightPointerEXT:
         case FEnum_glWeightPointerARB:
-            vtxarry_init(&s->Weight, s->arg[0], s->arg[1], s->arg[2], (s->arrayBuf == 0)?
-                LookupVertex(s->arg[3], s->szVertCache):(void *)(uintptr_t)s->arg[3]);
+            vtxarry_init_guest(&s->Weight, s->arg[0], s->arg[1], s->arg[2], s, s->arg[3]);
             s->parg[3] = VAL(s->Weight.ptr);
             break;
         case FEnum_glVertexAttribIPointer:
@@ -707,8 +733,7 @@ static void processArgs(MesaPTState *s)
         case FEnum_glVertexAttribPointerNV:
             {
                 vtxarry_t *arry = vattr2arry(s, s->arg[0]);
-                vtxarry_init(arry, s->arg[1], s->arg[2], s->arg[3], (s->arrayBuf == 0)?
-                        LookupVertex(s->arg[4], s->szVertCache):(void *)(uintptr_t)s->arg[4]);
+                vtxarry_init_guest(arry, s->arg[1], s->arg[2], s->arg[3], s, s->arg[4]);
                 s->parg[0] = VAL(arry->ptr);
             }
             break;
@@ -716,13 +741,16 @@ static void processArgs(MesaPTState *s)
         case FEnum_glVertexAttribPointerARB:
             {
                 vtxarry_t *arry = vattr2arry(s, s->arg[0]);
-                vtxarry_init(arry, s->arg[1], s->arg[2], s->arg[4], (s->arrayBuf == 0)?
-                        LookupVertex(s->arg[5], s->szVertCache):(void *)(uintptr_t)s->arg[5]);
+                vtxarry_init_guest(arry, s->arg[1], s->arg[2], s->arg[4], s, s->arg[5]);
                 s->parg[1] = VAL(arry->ptr);
             }
             break;
-        case FEnum_glInterleavedArrays:
-            vtxarry_init(&s->Interleaved, szgldata(s->arg[0], 0), 0, s->arg[1], LookupVertex(s->arg[2], s->szVertCache));
+        case FEnum_glInterleavedArrays: {
+            uint32_t room = 0;
+            void *ptr = LookupVertex(s->arg[2], s->szVertCache, &room);
+            int cbElem = szgldata(s->arg[0], 0);
+            vtxarry_init(&s->Interleaved, cbElem, 0, s->arg[1], ptr, room);
+            }
             s->Interleaved.enable = 1;
             s->parg[2] = VAL(s->Interleaved.ptr);
             break;
@@ -2002,8 +2030,7 @@ static void processFRet(MesaPTState *s)
             break;
         case FEnum_glFinish:
         case FEnum_glFlush:
-            MGLActivateHandler(1, 0);
-            dispTimerSched(s->dispTimer, &s->crashRC);
+            markGuestGLAlive(s);
             break;
         case FEnum_glMapBuffer:
         case FEnum_glMapBufferARB:
