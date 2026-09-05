@@ -71,6 +71,14 @@ static int cfg_traceFifo;
 static int cfg_traceFunc;
 static void *hwnd;
 
+/* The resolution the running game opened Glide with, and the drawable it was last scaled
+ * to. A game that is already running when the host switches to full screen never reaches
+ * init_window() again -- Diablo II opens Glide once and keeps it.
+ */
+static int current_glide_res = -1;
+static int scaled_to_fullscreen = -1, scaled_to_width, scaled_to_height;
+
+
 #ifdef CONFIG_DARWIN
 int glide_mapbufo(mapbufo_t *bufo, int add) { return 0; }
 #endif
@@ -231,8 +239,40 @@ void fini_window(void *opaque)
         glide_release_window(disp_cb, &cwnd_glide2x);
 #endif	    
     hwnd = 0;
+    current_glide_res = -1;
+    scaled_to_fullscreen = -1;
     cfg_traceFifo = 0;
     cfg_traceFunc = 0;
+}
+
+void glide_window_rescale(void)
+{
+    int drawable_width = 0, drawable_height = 0;
+
+    if (!hwnd || (current_glide_res < 0))
+        return;
+    const int glide_fullscreen = glide_gui_drawable(&drawable_width, &drawable_height);
+    if (!drawable_width || !drawable_height)
+        return;
+    if ((glide_fullscreen == scaled_to_fullscreen) && (drawable_width == scaled_to_width)
+            && (drawable_height == scaled_to_height))
+        return;
+    scaled_to_fullscreen = glide_fullscreen;
+    scaled_to_width = drawable_width;
+    scaled_to_height = drawable_height;
+
+    if (cfg_scaleGuiOff && !cfg_scaleX)
+        return;
+
+    const int glide_width = tblRes[current_glide_res].w, glide_height = tblRes[current_glide_res].h;
+    int target_width = (glide_width * drawable_height) / glide_height;
+    int target_height = drawable_height;
+    if (target_width > drawable_width) {
+        target_width = drawable_width;
+        target_height = (glide_height * drawable_width) / glide_width;
+    }
+    const int offset_x = (drawable_width - target_width) / 2;
+    conf_glide2x_window(target_width, target_height, offset_x);
 }
 
 void init_window(const int res, const char *wndTitle, void *opaque)
@@ -330,6 +370,11 @@ void init_window(const int res, const char *wndTitle, void *opaque)
         ((drawable_width - tblRes[sel].w) / 2):0;
     const int glide_res_width = (cfg_scaleX)? tblRes[sel].w:0;
     conf_glide2x(flags, glide_res_width, centre_offset_x);
+
+    current_glide_res = res;
+    scaled_to_fullscreen = glide_fullscreen;
+    scaled_to_width = drawable_width;
+    scaled_to_height = drawable_height;
 
     disp_cb->activate = 1;
     hwnd = (void *)(uintptr_t)(((tblRes[sel].h & 0x7FFFU) << 0x10) | tblRes[sel].w);

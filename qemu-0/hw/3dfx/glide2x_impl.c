@@ -777,6 +777,7 @@ static void *hDll = 0;
 void __stdcall (*setConfig)(const uint32_t flags, void *magic);
 void __stdcall (*setConfigRes)(const int res, void *swap12);
 void __stdcall (*setConfigOffset)(const int offset_x, const int offset_y);
+void __stdcall (*setConfigWindow)(const int width, const int height, const int offset_x);
 static int SDLSignValid(const uint32_t sign)
 {
     static uint32_t SDLSign;
@@ -795,6 +796,14 @@ void conf_glide2x(const uint32_t flags, const int res, const int offset_x)
         setConfigOffset(offset_x, 0);
     if (sign)
         SDLSignValid(sign);
+}
+/* The drawable changes size under a running game when the host switches to full screen.
+ * OpenGLide sets its viewport in grSstWinOpen and never again, so it has to be told.
+ */
+void conf_glide2x_window(const int width, const int height, const int offset_x)
+{
+    if (setConfigWindow)
+        setConfigWindow(width, height, offset_x);
 }
 
 void cwnd_glide2x(void *swnd, void *nwnd, void *opaque)
@@ -869,6 +878,7 @@ int init_glide2x(const char *dllname)
     setConfig = (void (*)(const uint32_t, void *))GetProcAddress(hDll, "_setConfig@8");
     setConfigRes = (void (*)(const int, void *))GetProcAddress(hDll, "_setConfigRes@8");
     setConfigOffset = (void (*)(const int, const int))GetProcAddress(hDll, "_setConfigOffset@8");
+    setConfigWindow = (void (*)(const int, const int, const int))GetProcAddress(hDll, "_setConfigWindow@12");
 #endif
 #if defined(CONFIG_LINUX) || defined(CONFIG_DARWIN)
     const char *soname[] = {
@@ -898,6 +908,7 @@ int init_glide2x(const char *dllname)
     setConfig = (void (*)(const uint32_t, void *))dlsym(hDll, "setConfig");
     setConfigRes = (void (*)(const int, void *))dlsym(hDll, "setConfigRes");
     setConfigOffset = (void (*)(const int, const int))dlsym(hDll, "setConfigOffset");
+    setConfigWindow = (void (*)(const int, const int, const int))dlsym(hDll, "setConfigWindow");
 #endif
     
     if (!hDll) {

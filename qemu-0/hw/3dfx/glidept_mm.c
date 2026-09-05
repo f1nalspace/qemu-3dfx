@@ -349,6 +349,12 @@ static void processArgs(GlidePTState *s)
             }
             if (glide_vsyncoff())
                 s->arg[0] = 0;
+            /* Between two frames is the one safe moment to resize the Glide window: a
+             * context is current and no LFB buffer is locked, so the buffers behind it may
+             * be reallocated.
+             */
+            if (!s->lfbDev->lock[0] && !s->lfbDev->lock[1])
+                glide_window_rescale();
             DPRINTF_COND((GRFuncTrace() == 2), ">>>>>>>> _grBufferSwap <<<<<<<<");
             s->perfs.stat();
             break;
