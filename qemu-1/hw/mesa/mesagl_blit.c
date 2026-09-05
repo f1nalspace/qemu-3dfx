@@ -34,6 +34,11 @@ void MesaContextAttest(const char *div, int *out)
     }
 }
 
+/* Compatibility-profile calls, so glcorearb.h has neither the prototypes nor the bit. */
+typedef void (APIENTRYP PFNGLPUSHCLIENTATTRIBCOMPATPROC)(GLbitfield mask);
+typedef void (APIENTRYP PFNGLPOPCLIENTATTRIBCOMPATPROC)(void);
+#define GL_CLIENT_VERTEX_ARRAY_BIT_COMPAT 0x00000002
+
 static struct {
     unsigned vao, vbo;
     int prog, vert, frag, black;
@@ -170,6 +175,7 @@ static int blit_program_buffer(void *save_map, const int size, const void *data)
     MESA_PFN(PFNGLGENVERTEXARRAYSPROC, glGenVertexArrays);
     MESA_PFN(PFNGLGETINTEGERVPROC,     glGetIntegerv);
     MESA_PFN(PFNGLISENABLEDPROC,       glIsEnabled);
+    MESA_PFN(PFNGLPUSHCLIENTATTRIBCOMPATPROC, glPushClientAttrib);
 
     struct save_states *last = (struct save_states *)save_map;
 
@@ -198,6 +204,15 @@ static int blit_program_buffer(void *save_map, const int size, const void *data)
             PFN_CALL(glGenVertexArrays(1, &blit.vao));
         PFN_CALL(glBindVertexArray(blit.vao));
     }
+    else {
+        /* Without a vertex array object the arrays are global state, and attribute 0 is
+         * the one the blit shader draws from -- on NVIDIA it aliases the fixed-function
+         * vertex pointer, which is what WineD3D draws its scene with. Overwriting it and
+         * leaving it disabled stops the guest from drawing anything from the next frame
+         * on: the scene disappears and never comes back. docs/LOG.md.
+         */
+        PFN_CALL(glPushClientAttrib(GL_CLIENT_VERTEX_ARRAY_BIT_COMPAT));
+    }
     if (!blit.vbo)
         PFN_CALL(glGenBuffers(1, &blit.vbo));
     PFN_CALL(glBindBuffer(GL_ARRAY_BUFFER, blit.vbo));
@@ -209,11 +224,14 @@ static void blit_restore_savemap(const void *save_map)
     MESA_PFN(PFNGLBINDBUFFERPROC,               glBindBuffer);
     MESA_PFN(PFNGLBINDVERTEXARRAYPROC,          glBindVertexArray);
     MESA_PFN(PFNGLENABLEPROC,                   glEnable);
+    MESA_PFN(PFNGLPOPCLIENTATTRIBCOMPATPROC,    glPopClientAttrib);
 
     struct save_states *last = (struct save_states *)save_map;
 
     if (last->boolean_map & GL_CONTEXT_CORE_PROFILE_BIT)
         PFN_CALL(glBindVertexArray(last->vao_binding));
+    else
+        PFN_CALL(glPopClientAttrib());
 
     PFN_CALL(glBindBuffer(GL_ARRAY_BUFFER, last->vbo_binding));
 
@@ -225,6 +243,118 @@ static void blit_restore_savemap(const void *save_map)
             PFN_CALL(glEnable(boolean_states[i]));
     }
 }
+/* qemu-3dfx: in full screen the upscaler is the only thing between a small guest image and
+ * a large drawable, and when it fails there is nothing left to look at afterwards. This
+ * writes down what it saw, switched on with QEMU_3DFX_UI_DIAG=1 -- the same knob as the
+ * ui/sdl2.c diagnostics. It calls glGetError() and so eats the guest's pending error,
+ * which is why it stays off by default. See docs/LOG.md.
+ */
+static int blit_diagnostics_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0) {
+        const char *value = getenv("QEMU_3DFX_UI_DIAG");
+        enabled = (value && (*value != '0'))? 1:0;
+    }
+    return enabled;
+}
+
+enum {
+    BLIT_PATH_IDLE = 0,
+    BLIT_PATH_ADJUSTED,
+    BLIT_PATH_COPY_TEXTURE,
+    BLIT_PATH_FRAMEBUFFER,
+};
+
+static const char *blit_path_name(const int path)
+{
+    switch (path) {
+        case BLIT_PATH_ADJUSTED:     return "uebersprungen";
+        case BLIT_PATH_COPY_TEXTURE: return "textur";
+        case BLIT_PATH_FRAMEBUFFER:  return "blit";
+        default:                     return "aus";
+    }
+}
+
+/* Where the scene actually is. A guest that presents from an FBO leaves its clear colour
+ * in the default framebuffer, and a scaler that reads the wrong one shows a picture with
+ * no scene in it -- the failure looks exactly like a broken scaler. One pixel from the
+ * middle of the guest image, out of each candidate, settles it.
+ */
+static unsigned blit_probe_pixel(const unsigned framebuffer, const int x, const int y)
+{
+    MESA_PFN(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer);
+    MESA_PFN(PFNGLGETINTEGERVPROC,     glGetIntegerv);
+    MESA_PFN(PFNGLREADPIXELSPROC,      glReadPixels);
+
+    unsigned char pixel[4] = { 0, 0, 0, 0 };
+    int read_binding = 0;
+
+    PFN_CALL(glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_binding));
+    PFN_CALL(glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer));
+    PFN_CALL(glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel));
+    PFN_CALL(glBindFramebuffer(GL_READ_FRAMEBUFFER, read_binding));
+    return (pixel[0] << 16) | (pixel[1] << 8) | pixel[2];
+}
+
+/* Sampled before anything is drawn -- afterwards every candidate carries our own output. */
+static unsigned probe_default_framebuffer, probe_guest_framebuffer;
+
+static void blit_probe_before_scaling(const int *v)
+{
+    MESA_PFN(PFNGLGETINTEGERVPROC, glGetIntegerv);
+
+    int read_binding = 0;
+    const int guest_width = v[0], guest_height = v[1] & 0x7FFFU;
+
+    if (!blit_diagnostics_enabled() || !guest_width || !guest_height)
+        return;
+    PFN_CALL(glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_binding));
+    probe_default_framebuffer = blit_probe_pixel(0, guest_width / 2, guest_height / 2);
+    probe_guest_framebuffer = (read_binding)?
+        blit_probe_pixel(read_binding, guest_width / 2, guest_height / 2):probe_default_framebuffer;
+}
+
+static void blit_diag(const int path, const int fullscreen, const int *v,
+                      const int drawable_context)
+{
+    MESA_PFN(PFNGLGETERRORPROC,    glGetError);
+    MESA_PFN(PFNGLGETINTEGERVPROC, glGetIntegerv);
+
+    static char last_line[256];
+    char line[256];
+    int view[4] = { 0, 0, 0, 0 }, read_binding = 0, draw_binding = 0, sample_buffers = 0;
+    int read_buffer = 0, draw_buffer = 0;
+    unsigned gl_error, pixel_default = 0, pixel_guest_fbo = 0;
+
+    if (!blit_diagnostics_enabled())
+        return;
+
+    gl_error = PFN_CALL(glGetError());
+    PFN_CALL(glGetIntegerv(GL_VIEWPORT, view));
+    PFN_CALL(glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_binding));
+    PFN_CALL(glGetIntegerv(GL_FRAMEBUFFER_BINDING, &draw_binding));
+    PFN_CALL(glGetIntegerv(GL_SAMPLE_BUFFERS, &sample_buffers));
+    PFN_CALL(glGetIntegerv(GL_READ_BUFFER, &read_buffer));
+    PFN_CALL(glGetIntegerv(GL_DRAW_BUFFER, &draw_buffer));
+    pixel_default = probe_default_framebuffer;
+    pixel_guest_fbo = probe_guest_framebuffer;
+
+    snprintf(line, sizeof(line),
+        "qemu-3dfx blit: %-13s vollbild=%d gast=%dx%d flaeche=%dx%d kontext=%d scaleroff=%d "
+        "sichtfeld=%d,%d %dx%d lesen=%d(0x%04x) zeichnen=%d(0x%04x) proben=%d "
+        "punkt0=%06x punktfbo=%06x fehler=0x%04x",
+        blit_path_name(path), fullscreen, v[0], v[1] & 0x7FFFU, v[2], v[3],
+        drawable_context, RenderScalerOff(),
+        view[0], view[1], view[2], view[3],
+        read_binding, read_buffer, draw_binding, draw_buffer, sample_buffers,
+        pixel_default, pixel_guest_fbo, gl_error);
+    if (!strcmp(line, last_line))
+        return;
+    strncpy(last_line, line, sizeof(last_line) - 1);
+    fprintf(stderr, "%s\n", line);
+}
 void MesaBlitScale(void)
 {
     MESA_PFN(PFNGLACTIVETEXTUREPROC,            glActiveTexture);
@@ -234,7 +364,6 @@ void MesaBlitScale(void)
     MESA_PFN(PFNGLDELETETEXTURESPROC,           glDeleteTextures);
     MESA_PFN(PFNGLDISABLEVERTEXATTRIBARRAYPROC, glDisableVertexAttribArray);
     MESA_PFN(PFNGLDRAWARRAYSPROC,               glDrawArrays);
-    MESA_PFN(PFNGLENABLEPROC,                   glEnable);
     MESA_PFN(PFNGLENABLEVERTEXATTRIBARRAYPROC,  glEnableVertexAttribArray);
     MESA_PFN(PFNGLGENTEXTURESPROC,              glGenTextures);
     MESA_PFN(PFNGLTEXPARAMETERIPROC,            glTexParameteri);
@@ -242,82 +371,101 @@ void MesaBlitScale(void)
     MESA_PFN(PFNGLUSEPROGRAMPROC,               glUseProgram);
     MESA_PFN(PFNGLVERTEXATTRIBPOINTERPROC,      glVertexAttribPointer);
     MESA_PFN(PFNGLVIEWPORTPROC,                 glViewport);
+    MESA_PFN(PFNGLBINDFRAMEBUFFERPROC,          glBindFramebuffer);
 
-    int v[4], fullscreen = mesa_gui_fullscreen(v);
+    int v[4], fullscreen = mesa_gui_fullscreen(v), drawable_context, path = BLIT_PATH_IDLE;
     blit.has_swap = 1;
 
     if (blit.adj) {
         blit.adj = !blit.adj;
+        blit_diag(BLIT_PATH_ADJUSTED, fullscreen, v, 1);
         return;
     }
     blit.flip = ScalerBlitFlip();
+    drawable_context = DrawableContext();
+    blit_probe_before_scaling(v);
 
-    if (DrawableContext()
-            && (v[3] > (v[1] & 0x7FFFU))
+    const int guest_width = v[0], guest_height = v[1] & 0x7FFFU;
+    const int drawable_width = v[2], drawable_height = v[3];
+    const int keep_aspect = (v[1] & (1 << 15))? 0:1;
+    const int size_differs = (drawable_width != guest_width) || (drawable_height != guest_height);
+
+    if (drawable_context && guest_width && guest_height && size_differs
             && (!fullscreen || RenderScalerOff())) {
-        unsigned screen_texture, w = v[0], h = v[1] & 0x7FFFU,
-                last_prog = blit_program_setup();
-        int aspect = (v[1] & (1 << 15))? 0:1,
-                offs_x = v[2] - ((v[0] * 1.f * v[3]) / (v[1] & 0x7FFFU));
-        offs_x >>= 1;
-        v[0] *= (1.f * v[3]) / (v[1] & 0x7FFFU);
-        v[1] = v[3];
+        unsigned screen_texture, last_prog = blit_program_setup();
+        int target_width = drawable_width, target_height = drawable_height;
+
+        if (keep_aspect) {
+            const float scale_to_width = (1.f * drawable_width) / guest_width;
+            const float scale_to_height = (1.f * drawable_height) / guest_height;
+            const float scale = (scale_to_width < scale_to_height)? scale_to_width:scale_to_height;
+            target_width = guest_width * scale;
+            target_height = guest_height * scale;
+        }
+        const int target_x = (drawable_width - target_width) / 2;
+        const int target_y = (drawable_height - target_height) / 2;
+        /* One quad, drawn twice: once black over the whole drawable for the letterbox
+         * bars, once textured into the centred target rectangle.
+         */
         const float coord[] = {
-            1-((1.f * v[2] - v[0]) / v[2]),-1,  1,-1,
-            1-((1.f * v[2] - v[0]) / v[2]), 1,  1, 1,
-            -1,-1, ((1.f * v[2] - v[0]) / v[2])-1,-1,
-            -1, 1, ((1.f * v[2] - v[0]) / v[2])-1, 1,
             -1,-1,  1,-1,  -1,1,  1,1,
         };
 
         struct save_states save_map;
 
         if (!blit_program_buffer(&save_map, sizeof(coord), coord)) {
-            PFN_CALL(glUniform1i(blit.black, GL_TRUE));
-            PFN_CALL(glViewport(0,0,  v[2], v[3]));
+            /* The image reaches the screen through the default framebuffer -- that is what
+             * glXSwapBuffers presents -- so this always draws there, whatever the guest
+             * left bound. Where it *reads* from depends: a guest that presents from an FBO
+             * and leaves it bound (WineD3D does) has nothing but its clear colour in the
+             * default framebuffer, and copying that gives a picture without the scene.
+             */
+            if (save_map.draw_binding)
+                PFN_CALL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
             PFN_CALL(glEnableVertexAttribArray(0));
             PFN_CALL(glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0));
-            if (save_map.read_binding == save_map.draw_binding) {
+            if (target_x || target_y) {
+                PFN_CALL(glUniform1i(blit.black, GL_TRUE));
+                PFN_CALL(glViewport(0,0,  drawable_width, drawable_height));
+                PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)); /* letterbox */
+            }
+            if (save_map.read_binding) {
+                /* Colour alone, and GL_LINEAR: a scaling blit that carries depth or
+                 * stencil is an error, and an errored blit leaves the screen black.
+                 * The guest's FBO is bottom-up against the window, hence the flipped
+                 * destination.
+                 */
+                path = BLIT_PATH_FRAMEBUFFER;
+                PFN_CALL(glBlitFramebuffer(0,0, guest_width,guest_height,
+                    target_x, target_y + target_height, target_x + target_width, target_y,
+                    GL_COLOR_BUFFER_BIT, GL_LINEAR));
+            }
+            else {
+                path = BLIT_PATH_COPY_TEXTURE;
                 PFN_CALL(glActiveTexture(GL_TEXTURE0));
                 PFN_CALL(glGenTextures(1, &screen_texture));
                 PFN_CALL(glBindTexture(GL_TEXTURE_2D, screen_texture));
-                PFN_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST));
-                PFN_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));
+                PFN_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
+                PFN_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
                 PFN_CALL(glCopyTexImage2D(GL_TEXTURE_2D, 0, (FRAMEBUFFER_SRGB_(save_map) && ScalerSRGBCorr())?
-                            GL_SRGB:GL_RGBA, 0,0, w,h, 0));
-                if (aspect) {
-                    PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)); /* clear */
-                    PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 4, 4)); /* clear */
-                    PFN_CALL(glViewport(offs_x,0,  v[0],v[1]));
-                }
+                            GL_SRGB:GL_RGBA, 0,0, guest_width,guest_height, 0));
                 PFN_CALL(glUniform1i(blit.black, GL_FALSE));
-                PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 8, 4)); /* scale */
+                PFN_CALL(glViewport(target_x,target_y,  target_width,target_height));
+                PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)); /* scale */
                 PFN_CALL(glDeleteTextures(1, &screen_texture));
                 PFN_CALL(glActiveTexture(save_map.texture));
                 PFN_CALL(glBindTexture(GL_TEXTURE_2D, save_map.texture_binding));
             }
-            else {
-                if (FRAMEBUFFER_SRGB_(save_map))
-                    PFN_CALL(glEnable(boolean_states[0]));
-                if (aspect) {
-                    PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)); /* clear */
-                    PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 4, 4)); /* clear */
-                    PFN_CALL(glBlitFramebuffer(0,0,w,h, offs_x,v[1],v[0]+offs_x,0,
-                        (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT),
-                        GL_NEAREST));
-                }
-                else
-                    PFN_CALL(glBlitFramebuffer(0,0,w,h, 0,v[3],v[2],0,
-                        (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT),
-                        GL_NEAREST));
-            }
             PFN_CALL(glDisableVertexAttribArray(0));
             PFN_CALL(glViewport(save_map.view[0], save_map.view[1],
                                 save_map.view[2], save_map.view[3]));
+            if (save_map.draw_binding)
+                PFN_CALL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, save_map.draw_binding));
             blit_restore_savemap(&save_map);
         }
         PFN_CALL(glUseProgram(last_prog));
     }
+    blit_diag(path, fullscreen, v, drawable_context);
 }
 
 void MesaRenderScaler(const uint32_t FEnum, void *args)
