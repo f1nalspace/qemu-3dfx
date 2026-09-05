@@ -294,10 +294,17 @@ void init_window(const int res, const char *wndTitle, void *opaque)
         fclose(fp);
     }
 
-    int gui_height, glide_fullscreen = glide_gui_fullscreen(0, &gui_height);
-    cfg_scaleGuiOff = (glide_fullscreen || cfg_scaleX)? 1:cfg_scaleGuiOff;
-    cfg_scaleX = (!cfg_scaleGuiOff && (gui_height > 480) && (gui_height > tblRes[res].h))?
-        (int)((1.f * tblRes[res].w * gui_height) / tblRes[res].h):cfg_scaleX;
+    int guest_height, glide_fullscreen = glide_gui_fullscreen(0, &guest_height);
+    int drawable_width = 0, drawable_height = 0;
+    glide_gui_drawable(&drawable_width, &drawable_height);
+    /* In full screen the drawable is the host screen, and the guest surface says nothing
+     * about it -- scaling to the guest surface leaves the image at the GL origin, which is
+     * the bottom left corner. See docs/LOG.md [395].
+     */
+    const int scale_target_height = (glide_fullscreen && drawable_height)? drawable_height:guest_height;
+    cfg_scaleGuiOff = (cfg_scaleX)? 1:cfg_scaleGuiOff;
+    cfg_scaleX = (!cfg_scaleGuiOff && (scale_target_height > 480) && (scale_target_height > tblRes[res].h))?
+        (int)((1.f * tblRes[res].w * scale_target_height) / tblRes[res].h):cfg_scaleX;
 
 #define WRAPPER_FLAG_WINDOWED           0x01
 #define WRAPPER_FLAG_MIPMAPS            0x02
@@ -314,12 +321,15 @@ void init_window(const int res, const char *wndTitle, void *opaque)
     flags |= cfg_cntxMSAA;
 
     int sel = res;
-    if (cfg_scaleX) {
+    if (cfg_scaleX)
         sel = scaledRes(cfg_scaleX, ((float)tblRes[res].h) / tblRes[res].w);
-        conf_glide2x(flags, tblRes[sel].w);
-    }
-    else
-        conf_glide2x(flags, 0);
+    /* Centre the image in a drawable that is wider than the scaled game resolution.
+     * OpenGLide puts its viewport at the GL origin otherwise.
+     */
+    const int centre_offset_x = (glide_fullscreen && (drawable_width > tblRes[sel].w))?
+        ((drawable_width - tblRes[sel].w) / 2):0;
+    const int glide_res_width = (cfg_scaleX)? tblRes[sel].w:0;
+    conf_glide2x(flags, glide_res_width, centre_offset_x);
 
     disp_cb->activate = 1;
     hwnd = (void *)(uintptr_t)(((tblRes[sel].h & 0x7FFFU) << 0x10) | tblRes[sel].w);
