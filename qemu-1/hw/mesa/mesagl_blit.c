@@ -23,6 +23,7 @@
 #include "mesagl_impl.h"
 
 int mesa_gui_fullscreen(const void *);
+void MesaRenderScaler(const uint32_t FEnum, void *args);
 
 void MesaContextAttest(const char *div, int *out)
 {
@@ -43,6 +44,14 @@ static struct {
     unsigned vao, vbo;
     int prog, vert, frag, black;
     int adj, flip, has_swap;
+    /* What the guest last asked for, and whether the render scaler acted on it. A guest
+     * that sets its viewport once and never again -- Diablo II does -- has nobody to adjust
+     * it when the drawable changes underneath, and the picture keeps the size it had before
+     * the switch. See docs/LOG.md.
+     */
+    int guest_viewport[4], guest_scissor[4];
+    int guest_viewport_seen, guest_scissor_seen;
+    int render_scaled, last_fullscreen;
 } blit;
 static unsigned blit_program_setup(void)
 {
@@ -355,6 +364,31 @@ static void blit_diag(const int path, const int fullscreen, const int *v,
     strncpy(last_line, line, sizeof(last_line) - 1);
     fprintf(stderr, "%s\n", line);
 }
+/* Put the guest's own boxes back through the scaler. In full screen they come out scaled to
+ * the drawable, in a window unchanged -- either way they end up right without the guest
+ * having to set them again.
+ */
+static void blit_reapply_guest_boxes(void)
+{
+    MESA_PFN(PFNGLSCISSORPROC,  glScissor);
+    MESA_PFN(PFNGLVIEWPORTPROC, glViewport);
+
+    uint32_t box[4];
+
+    if (blit.guest_viewport_seen) {
+        for (int i = 0; i < 4; i++)
+            box[i] = blit.guest_viewport[i];
+        MesaRenderScaler(FEnum_glViewport, box);
+        PFN_CALL(glViewport(box[0], box[1], box[2], box[3]));
+    }
+    if (blit.guest_scissor_seen) {
+        for (int i = 0; i < 4; i++)
+            box[i] = blit.guest_scissor[i];
+        MesaRenderScaler(FEnum_glScissor, box);
+        PFN_CALL(glScissor(box[0], box[1], box[2], box[3]));
+    }
+}
+
 void MesaBlitScale(void)
 {
     MESA_PFN(PFNGLACTIVETEXTUREPROC,            glActiveTexture);
@@ -383,6 +417,13 @@ void MesaBlitScale(void)
     }
     blit.flip = ScalerBlitFlip();
     drawable_context = DrawableContext();
+
+    if (fullscreen != blit.last_fullscreen) {
+        blit.last_fullscreen = fullscreen;
+        blit.render_scaled = 0;
+        if (drawable_context)
+            blit_reapply_guest_boxes();
+    }
     blit_probe_before_scaling(v);
 
     const int guest_width = v[0], guest_height = v[1] & 0x7FFFU;
@@ -390,8 +431,14 @@ void MesaBlitScale(void)
     const int keep_aspect = (v[1] & (1 << 15))? 0:1;
     const int size_differs = (drawable_width != guest_width) || (drawable_height != guest_height);
 
+    /* Two ways up, and only one of them may run: the render scaler enlarges the guest's own
+     * boxes before it draws, this one enlarges the finished frame. Which one carries depends
+     * on the title -- a guest whose boxes the scaler never got to see is left to this one.
+     */
+    const int render_scaler_carries = fullscreen && !RenderScalerOff() && blit.render_scaled;
+
     if (drawable_context && guest_width && guest_height && size_differs
-            && (!fullscreen || RenderScalerOff())) {
+            && !render_scaler_carries) {
         unsigned screen_texture, last_prog = blit_program_setup();
         int target_width = drawable_width, target_height = drawable_height;
 
@@ -485,6 +532,16 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
         case FEnum_glScissor:
         case FEnum_glViewport:
             box = args;
+            for (int i = 0; i < 4; i++) {
+                if (FEnum == FEnum_glViewport)
+                    blit.guest_viewport[i] = box[i];
+                else
+                    blit.guest_scissor[i] = box[i];
+            }
+            if (FEnum == FEnum_glViewport)
+                blit.guest_viewport_seen = 1;
+            else
+                blit.guest_scissor_seen = 1;
             break;
         case GL_VIEWPORT:
             box = args;
@@ -514,6 +571,7 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
             box[2] = v[2];
         }
         blit.adj = blit_adj;
+        blit.render_scaled = 1;
     }
 }
 
