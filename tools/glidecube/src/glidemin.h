@@ -103,7 +103,12 @@ typedef FxU32 GrAlphaBlendFnc_t;
 
 #define GR_TEXFMT_P_8                   0x5
 #define GR_TEXFMT_RGB_565               0xa
+#define GR_TEXFMT_ARGB_1555             0xb
+#define GR_TEXFMT_ARGB_4444             0xc
 #define GR_TEXFMT_ARGB_8888             0x10
+
+#define GR_LOD_16                       0x4
+#define GR_LOD_8                        0x5
 
 #define GR_TEXTABLE_NCC0                0x0
 #define GR_TEXTABLE_PALETTE             0x2
@@ -125,6 +130,7 @@ typedef FxU32 GrAlphaBlendFnc_t;
 #define GR_COMBINE_FUNCTION_SCALE_OTHER 0x3
 #define GR_COMBINE_FACTOR_ONE           0x8
 #define GR_COMBINE_OTHER_TEXTURE        0x1
+#define GR_COMBINE_LOCAL_NONE           0x0
 
 #define GR_SSTTYPE_VOODOO    0
 #define GR_SSTTYPE_SST96     1
@@ -244,6 +250,9 @@ extern void   GLIDE_CALL grTexCombine(GrChipID_t tmu,
 extern void   GLIDE_CALL grTexFilterMode(GrChipID_t tmu, GrTextureFilterMode_t minfilter, GrTextureFilterMode_t magfilter);
 extern void   GLIDE_CALL grTexClampMode(GrChipID_t tmu, GrTextureClampMode_t s_clamp, GrTextureClampMode_t t_clamp);
 extern void   GLIDE_CALL grTexMipMapMode(GrChipID_t tmu, GrMipMapMode_t mode, FxBool lodBlend);
+extern FxBool GLIDE_CALL grLfbReadRegion(GrBuffer_t src_buffer, FxU32 src_x, FxU32 src_y,
+                                         FxU32 src_width, FxU32 src_height,
+                                         FxU32 dst_stride, void *dst_data);
 extern void   GLIDE_CALL grChromakeyMode(GrChromakeyMode_t mode);
 extern void   GLIDE_CALL grChromakeyValue(GrColor_t value);
 extern void   GLIDE_CALL grAlphaBlendFunction(GrAlphaBlendFnc_t rgb_sf, GrAlphaBlendFnc_t rgb_df,

@@ -47,6 +47,16 @@
 #define COBJMACROS
 #include <d3d8.h>
 
+/* The transparency test. Found by way of No One Lives Forever, which draws its
+ * whole menu opaque on the very first run (docs/LOG.md [417], [418]) -- nothing
+ * here would have noticed, because no demo ever drew anything transparent.
+ * Headers come from tools/common of the project tree, $(KEYTEST) in the Makefile
+ * says where.
+ */
+#include "keytest.h"
+#include "keylogo_d3d8.h"
+#include "logo_directx.h"
+
 /* ------------------------------------------------------------------ time -- */
 
 static double seconds_now(void)
@@ -366,6 +376,8 @@ int main(int argc, char **argv)
     BYTE *lockedBytes;
     double startTime, lastReportTime, now;
     long framesTotal = 0, framesSinceReport = 0;
+    KeyLogoD3D8 transparencyLogo;
+    int transparencyPassed = 0;
 
     for (argument = 1; argument < argc; argument++) {
         if (strcmp(argv[argument], "-info") == 0) {
@@ -437,6 +449,11 @@ int main(int argc, char **argv)
     presentParameters.hDeviceWindow          = window;
     presentParameters.EnableAutoDepthStencil = TRUE;
     presentParameters.AutoDepthStencilFormat = D3DFMT_D16;
+    /* The transparency check reads the finished frame back, and that needs a
+     * lockable back buffer. Without the flag Direct3D refuses the lock and only
+     * the check falls away, but then the demo would report nothing at all.
+     */
+    presentParameters.Flags                  = D3DPRESENTFLAG_LOCKABLE_BACKBUFFER;
     if (fullscreen) {
         presentParameters.Windowed                   = FALSE;
         presentParameters.BackBufferWidth            = renderWidth;
@@ -513,6 +530,33 @@ int main(int argc, char **argv)
     IDirect3DDevice8_SetIndices(device, indexBuffer, 0);
     IDirect3DDevice8_SetVertexShader(device, CUBE_VERTEX_FORMAT);
 
+    {
+        /* The colour that has to survive around the logo, in the back buffer's
+         * own layout: 565 in full screen, whatever the desktop uses in a window.
+         */
+        const int background_bytes_per_pixel = (presentParameters.BackBufferFormat == D3DFMT_R5G6B5
+                || presentParameters.BackBufferFormat == D3DFMT_X1R5G5B5
+                || presentParameters.BackBufferFormat == D3DFMT_A1R5G5B5) ? 2 : 4;
+        unsigned long packed_background;
+        unsigned long packed_key;
+
+        if (presentParameters.BackBufferFormat == D3DFMT_R5G6B5) {
+            packed_background = ((32u >> 3) << 11) | ((32u >> 2) << 5) | (32u >> 3);
+            packed_key        = (31u << 11) | (0u << 5) | 31u;
+        } else if (background_bytes_per_pixel == 2) {
+            packed_background = ((32u >> 3) << 10) | ((32u >> 3) << 5) | (32u >> 3);
+            packed_key        = (31u << 10) | (0u << 5) | 31u;
+        } else {
+            packed_background = 0x202020u;
+            packed_key        = 0xff00ffu;
+        }
+
+        keylogo_d3d8_create(&transparencyLogo, device,
+                            logo_directx_rgba, LOGO_DIRECTX_WIDTH, LOGO_DIRECTX_HEIGHT,
+                            LOGO_DIRECTX_SOLID_PIXELS, renderWidth, renderHeight,
+                            packed_background, packed_key, backgroundColor, background_bytes_per_pixel);
+    }
+
     startTime      = seconds_now();
     lastReportTime = startTime;
 
@@ -540,7 +584,17 @@ int main(int argc, char **argv)
         IDirect3DDevice8_Clear(device, 0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, backgroundColor, 1.0f, 0);
         IDirect3DDevice8_BeginScene(device);
         IDirect3DDevice8_DrawIndexedPrimitive(device, D3DPT_TRIANGLELIST, 0, CUBE_VERTEX_COUNT, 0, CUBE_TRIANGLE_COUNT);
+        keylogo_d3d8_draw(&transparencyLogo, device);
         IDirect3DDevice8_EndScene(device);
+
+        /* Checked once, on the second frame: the first can still carry leftovers
+         * from creating the device, and reading back every frame would measure
+         * the read-back instead of the frame rate.
+         */
+        if (framesTotal == 1) {
+            transparencyPassed = keylogo_d3d8_verify(&transparencyLogo, device);
+        }
+
         IDirect3DDevice8_Present(device, NULL, NULL, NULL, NULL);
 
         framesTotal++;
@@ -564,6 +618,12 @@ int main(int argc, char **argv)
            framesTotal, now - startTime, framesTotal / (now - startTime));
     fflush(stdout);
 
+    printf("Transparenz ueber Direct3D 8: %s\n",
+           transparencyLogo.usable ? (transparencyPassed ? "in Ordnung" : "FEHLERHAFT")
+                                   : "nicht geprueft");
+    fflush(stdout);
+
+    keylogo_d3d8_release(&transparencyLogo);
     IDirect3DIndexBuffer8_Release(indexBuffer);
     IDirect3DVertexBuffer8_Release(vertexBuffer);
     IDirect3DDevice8_Release(device);

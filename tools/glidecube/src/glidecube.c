@@ -8,13 +8,17 @@
  * way it compiles with gcc against OpenGLide on the host, with
  * i686-w64-mingw32-gcc for the guest, and with Visual C++ 6.0 inside the guest.
  *
- * Usage:  glidecube [seconds] [resolution]
- *         seconds     run time, default 15. 0 means forever.
- *         resolution  320, 512, 640 or 800. Default 640.
+ * Usage:  glidecube [-seconds N] [-width N] [-info] [-vsync]
+ *         -seconds N  run time, default 15. 0 means forever.
+ *         -width N    320, 512, 640 or 800. Default 640.
  *         -info       print the hardware details only, draw nothing.
  *         -vsync      wait for vertical blank. Without this switch the frame
  *                     rate measures throughput rather than the refresh rate of
  *                     the display.
+ *         A bare number still works: the first is the run time, the second the
+ *         width. Anything else that starts with a dash is refused -- silently
+ *         reading it as a number is how "-seconds 6" once meant "run forever",
+ *         and a Glide run has no window to close (docs/LOG.md [424]).
  */
 
 #include <stdio.h>
@@ -23,6 +27,16 @@
 #include <math.h>
 
 #include "glidemin.h"
+
+/* The transparency test. Glide is the interesting one: it has two ways to make a
+ * texel vanish -- alpha blending and the chroma key -- and the chroma key was
+ * wrong twice in OpenGLide, both times found the hard way at Diablo II's menu
+ * (docs/LOG.md [236]-[239]). Headers come from tools/common of the project tree,
+ * $(KEYTEST) in the Makefile says where.
+ */
+#include "keytest.h"
+#include "keylogo_glide.h"
+#include "logo_3dfx.h"
 
 #if defined(_WIN32) || defined(__MINGW32__)
 #  include <windows.h>
@@ -41,6 +55,35 @@ static double seconds_now(void)
     gettimeofday(&tv, NULL);
     return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
 #endif
+}
+
+/* ------------------------------------------------------------ interrupt -- */
+
+/* Glide draws on the host, not into a guest window, so there is nothing to click
+ * shut and no message queue to close. Without this the only way out of a run is
+ * Ctrl+C in the console, and that ends the process hard -- which leaves the
+ * wrapper's use count above zero and blocks Glide for the rest of the Windows
+ * session (wrappers/3dfx/src/gl301dll.c:981). Esc is asynchronous, so it does not
+ * matter which window holds the focus.
+ */
+static int stop_requested(void)
+{
+#if defined(_WIN32) || defined(__MINGW32__)
+    return (GetAsyncKeyState(VK_ESCAPE) & 0x8000)? 1:0;
+#else
+    return 0;
+#endif
+}
+
+static void print_usage(const char *program_name)
+{
+    printf("Aufruf: %s [-seconds N] [-width N] [-info] [-vsync]\n", program_name);
+    printf("  -seconds N  Laufzeit in Sekunden, Vorgabe 15. 0 heisst endlos.\n");
+    printf("  -width N    320, 512, 640 oder 800. Vorgabe 640.\n");
+    printf("  -info       nur die Geraetedaten ausgeben, nichts zeichnen.\n");
+    printf("  -vsync      auf den Strahlruecklauf warten.\n");
+    printf("  Esc beendet einen laufenden Durchgang.\n");
+    fflush(stdout);
 }
 
 /* -------------------------------------------------------------- geometry -- */
@@ -221,10 +264,15 @@ int main(int argc, char **argv)
     double run_seconds = 15.0;
     int requested_width = 640;
     int info_only = 0;
+    int positional_arguments = 0;
+    int stopped_by_key = 0;
     int swap_interval = 0;   /* 0 = do not wait for vertical blank */
     int argument;
     double start_time, last_report, now;
     long frames_total = 0, frames_since_report = 0;
+    KeyLogoGlide transparency_logo;
+    int transparency_alpha_passed = 0;
+    int transparency_chroma_passed = 0;
     float angle = 0.0f;
     const double rotations_per_second = 0.12;
 
@@ -233,7 +281,15 @@ int main(int argc, char **argv)
             info_only = 1;
         } else if (strcmp(argv[argument], "-vsync") == 0) {
             swap_interval = 1;
-        } else if (argument == 1) {
+        } else if (strcmp(argv[argument], "-seconds") == 0 && argument + 1 < argc) {
+            run_seconds = atof(argv[++argument]);
+        } else if (strcmp(argv[argument], "-width") == 0 && argument + 1 < argc) {
+            requested_width = atoi(argv[++argument]);
+        } else if (argv[argument][0] == '-') {
+            printf("Unbekannte Option: %s\n", argv[argument]);
+            print_usage(argv[0]);
+            return 2;
+        } else if (positional_arguments++ == 0) {
             run_seconds = atof(argv[argument]);
         } else {
             requested_width = atoi(argv[argument]);
@@ -290,6 +346,10 @@ int main(int argc, char **argv)
     grDepthBufferFunction(GR_CMP_LESS);
     grDepthMask(FXTRUE);
 
+    keylogo_glide_create(&transparency_logo, logo_3dfx_rgba,
+                         LOGO_3DFX_WIDTH, LOGO_3DFX_HEIGHT, LOGO_3DFX_SOLID_PIXELS,
+                         (int)screen_width, (int)screen_height, 0x20, 0x20, 0x20);
+
     start_time  = seconds_now();
     last_report = start_time;
 
@@ -299,6 +359,16 @@ int main(int argc, char **argv)
          * channel. So 0xFF. */
         grBufferClear(0xFF202020, 255, GR_WDEPTHVALUE_FARTHEST);
         draw_cube(angle);
+        /* Alternates between the two routes so both stay visible while it runs;
+         * the two checks below each look at the frame that used their own route.
+         */
+        keylogo_glide_draw(&transparency_logo, (frames_total & 1) ? 1 : 0, 0x20, 0x20, 0x20);
+
+        if (frames_total == 2)
+            transparency_alpha_passed = keylogo_glide_verify(&transparency_logo, "Alphamischung");
+        else if (frames_total == 3)
+            transparency_chroma_passed = keylogo_glide_verify(&transparency_logo, "Chroma-Key");
+
         grBufferSwap(swap_interval);
 
         frames_total++;
@@ -320,14 +390,29 @@ int main(int argc, char **argv)
         if (run_seconds > 0.0 && (now - start_time) >= run_seconds) {
             break;
         }
+        if (stop_requested()) {
+            stopped_by_key = 1;
+            break;
+        }
     }
 
     now = seconds_now();
+    if (stopped_by_key)
+        printf("Mit Esc abgebrochen.\n");
     printf("gesamt: %ld frames in %.1f seconds, %.1f FPS\n",
            frames_total, now - start_time,
            frames_total / (now - start_time));
     fflush(stdout);
 
+    printf("Transparenz ueber Glide, Alphamischung: %s\n",
+           transparency_logo.usable ? (transparency_alpha_passed ? "in Ordnung" : "FEHLERHAFT")
+                                    : "nicht geprueft");
+    printf("Transparenz ueber Glide, Chroma-Key    : %s\n",
+           transparency_logo.usable ? (transparency_chroma_passed ? "in Ordnung" : "FEHLERHAFT")
+                                    : "nicht geprueft");
+    fflush(stdout);
+
+    keylogo_glide_release(&transparency_logo);
     grSstWinClose();
     grGlideShutdown();
     return 0;

@@ -29,12 +29,31 @@
 #include <string.h>
 #include <math.h>
 
+/* The transparency test. Found by way of No One Lives Forever, which draws its
+ * whole menu opaque on the very first run (docs/LOG.md [417], [418]) -- nothing
+ * here would have noticed, because no demo ever drew anything transparent.
+ * The headers come from tools/common of the project tree; $(KEYTEST) in the
+ * Makefile says where, so this file does not hardcode a location.
+ */
+#include "keytest.h"
+#include "keylogo_d3d7.h"
+#include "logo_direct3d.h"
+
 #define REPORT_FILE_NAME    "C:\\DDOUT.TXT"
 #define WINDOW_CLASS_NAME   "ddcube"
 
 #define SCREEN_WIDTH        640
 #define SCREEN_HEIGHT       480
 #define SCREEN_DEPTH        16
+
+/* The colour the scene is cleared to. Named because the transparency check has
+ * to expect exactly this value around the logo, and a second literal would drift
+ * apart from the first sooner or later.
+ */
+#define CLEAR_RED           0x20
+#define CLEAR_GREEN         0x20
+#define CLEAR_BLUE          0x20
+#define CLEAR_COLOUR_ARGB   ((D3DCOLOR)((CLEAR_RED << 16) | (CLEAR_GREEN << 8) | CLEAR_BLUE))
 
 static FILE *report_file = NULL;
 
@@ -53,6 +72,14 @@ static void report(const char *format, ...)
         va_end(arguments);
         fflush(report_file);
     }
+}
+
+/* The logo overlay writes through keytest_report(), so both have to end up in
+ * the same file -- otherwise half the run would be missing from the log.
+ */
+static void report_share_file_with_keytest(void)
+{
+    keytest_report_file = report_file;
 }
 
 /* --------------------------------------------------------- enumeration -- */
@@ -314,6 +341,8 @@ int main(int argc, char **argv)
     double               run_seconds = default_run_seconds;
     int                  info_only = 0;
     int                  mode_count = 0;
+    KeyLogoD3D7          transparency_logo;
+    int                  transparency_passed = 0;
     int                  argument;
     DWORD                start_ticks, now_ticks;
     long                 frames = 0;
@@ -327,6 +356,7 @@ int main(int argc, char **argv)
     }
 
     report_file = fopen(REPORT_FILE_NAME, "w");
+    report_share_file_with_keytest();
 
     report("ddcube -- DirectDraw und Direct3D 7 ueber qemu-3dfx\n");
     report("---------------------------------------------------\n\n");
@@ -456,6 +486,36 @@ int main(int argc, char **argv)
     IDirect3DDevice7_SetRenderState(device, D3DRENDERSTATE_ZENABLE, TRUE);
     IDirect3DDevice7_SetRenderState(device, D3DRENDERSTATE_CULLMODE, D3DCULL_NONE);
 
+    /* The clear colour is what has to survive around the logo, so the check is
+     * told the same value that Clear() below uses.
+     */
+    {
+        /* 565 and 555 both occur, so the expected background is packed from the
+         * back buffer's own format instead of being written out as a constant.
+         */
+        DDSURFACEDESC2 back_buffer_description;
+        unsigned long packed_clear_colour = 0;
+        unsigned long packed_key_colour = 0;
+
+        memset(&back_buffer_description, 0, sizeof(back_buffer_description));
+        back_buffer_description.dwSize = sizeof(back_buffer_description);
+        if (IDirectDrawSurface7_GetSurfaceDesc(back_buffer, &back_buffer_description) == DD_OK) {
+            packed_clear_colour = keylogo_pack_texel(&back_buffer_description.ddpfPixelFormat,
+                                                     CLEAR_RED, CLEAR_GREEN, CLEAR_BLUE, 0);
+            /* Magenta in the back buffer's own layout. The transparent texels
+             * carry it, so any pixel of this colour on screen means the alpha
+             * was dropped somewhere along the way.
+             */
+            packed_key_colour = keylogo_pack_texel(&back_buffer_description.ddpfPixelFormat,
+                                                   0xff, 0x00, 0xff, 0);
+        }
+
+        keylogo_d3d7_create(&transparency_logo, directdraw, device,
+                            logo_direct3d_rgba, LOGO_DIRECT3D_WIDTH, LOGO_DIRECT3D_HEIGHT,
+                            LOGO_DIRECT3D_SOLID_PIXELS, SCREEN_WIDTH, SCREEN_HEIGHT,
+                            packed_clear_colour, packed_key_colour, CLEAR_COLOUR_ARGB);
+    }
+
     build_cube();
 
     start_ticks = GetTickCount();
@@ -480,13 +540,23 @@ int main(int argc, char **argv)
         IDirect3DDevice7_SetTransform(device, D3DTRANSFORMSTATE_WORLD, &world_matrix);
 
         IDirect3DDevice7_Clear(device, 0, NULL,
-                               D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0x00202020, 1.0f, 0);
+                               D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOUR_ARGB, 1.0f, 0);
         if (IDirect3DDevice7_BeginScene(device) == D3D_OK) {
             IDirect3DDevice7_DrawPrimitive(device, D3DPT_TRIANGLELIST,
                                            CUBE_VERTEX_FORMAT, cube_vertices,
                                            CUBE_VERTEX_COUNT, 0);
+            keylogo_d3d7_draw(&transparency_logo, device);
             IDirect3DDevice7_EndScene(device);
         }
+
+        /* Checked once, on the second frame: the first one can still carry
+         * leftovers from setting the mode, and reading back every frame would
+         * measure the read-back instead of the frame rate.
+         */
+        if (frames == 1) {
+            transparency_passed = keylogo_d3d7_verify(&transparency_logo, back_buffer);
+        }
+
         IDirectDrawSurface7_Flip(primary, NULL, DDFLIP_WAIT);
         frames++;
 
@@ -507,6 +577,11 @@ int main(int argc, char **argv)
                (total_seconds > 0.0) ? (frames / total_seconds) : 0.0);
     }
 
+    report("Transparenz ueber Direct3D 7: %s\n",
+           transparency_logo.usable ? (transparency_passed ? "in Ordnung" : "FEHLERHAFT")
+                                    : "nicht geprueft");
+
+    keylogo_d3d7_release(&transparency_logo);
     if (device != NULL)       IDirect3DDevice7_Release(device);
     if (depth_buffer != NULL) IDirectDrawSurface7_Release(depth_buffer);
     if (primary != NULL)      IDirectDrawSurface7_Release(primary);

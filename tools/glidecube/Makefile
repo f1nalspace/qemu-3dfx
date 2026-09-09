@@ -15,11 +15,22 @@ OPENGLIDE   ?= $(PROJECT_ROOT)/openglide/build/.libs
 WRAPPER_DLL ?= $(QEMU3DFX)/wrappers/3dfx/build/glide2x.dll
 
 SRC     := src/glidecube.c
-HEADERS := src/glidemin.h
+# The transparency headers are prerequisites too. Left out, a change to
+# keylogo_glide.h leaves make convinced the build is current and the old test
+# runs again -- the same trap as the stamp.o rule in docs/LOG.md [250].
+# Deferred with `=`, because $(KEYTEST) is only set further down.
+HEADERS  = src/glidemin.h $(wildcard $(KEYTEST)/*.h)
 BUILD   := build
 
 # -std=c89 keeps the source at what Visual C++ 6.0 can compile too.
-CFLAGS_COMMON := -std=c89 -Wall -Wextra -O2 -Isrc
+# The transparency test lives in the project tree, not in this fork -- a commit
+# under qemu-3dfx/ moves HEAD and would force a re-sign plus a full wrapper
+# rebuild (docs/LOG.md [209], [250], [259]). Overridable, like $(OPENGLIDE).
+KEYTEST ?= ../../../tools/common
+
+# gnu89 rather than c89: the shared headers use `static inline`, which strict
+# C89 does not have.
+CFLAGS_COMMON := -std=gnu89 -Wall -Wextra -O2 -Isrc -I$(KEYTEST)
 
 CROSS       := i686-w64-mingw32-
 # -march=prescott matches what the guest CPU actually is (qemu -cpu coreduo, SSE3 is the ceiling):
