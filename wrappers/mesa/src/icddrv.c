@@ -94,6 +94,9 @@ static void icdlog(const char *fmt, ...)
 
 #define PIXEL_FORMAT_COUNT 220 /* guessed value from NVIDIA driver */
 
+/* The layer index that asks for an empty context, see mgdCreateLayerContext. */
+#define ICD_EMPTY_LAYER_PLANE 255
+
 // Number of entries expected for various versions of OpenGL
 #define OPENGL_VERSION_100_ENTRIES      306
 #define OPENGL_VERSION_110_ENTRIES      336
@@ -918,6 +921,7 @@ uint32_t WINAPI private_wglMakeContextCurrentARB(uint32_t arg0, uint32_t arg1, u
  **/
 BOOL WINAPI mgdValidateVersion(ULONG ulVersion)
 {
+	icdlog("ENTRY: mgdValidateVersion(%lu)\n", ulVersion);
 	(void)ulVersion;
 	char progname[MAX_PATH];
 	
@@ -930,11 +934,13 @@ BOOL WINAPI mgdValidateVersion(ULONG ulVersion)
 		{
 			if(stricmp(progname+len-4, ".scr") == 0)
 			{
+				icdlog("  refused: screensaver\n");
 				return FALSE;
 			}
 		}
 	}
 	
+	icdlog("  accepted: %s\n", progname);
 	return TRUE;
 }
 
@@ -1040,7 +1046,7 @@ HGLRC WINAPI mgdCreateLayerContext(HDC hdc, int iLayerPlane)
 	  if we need empty hgtrc, we call CreateLayerContext
 	  with concrete nonsence iLayerPlane
 	*/
-	else if(iLayerPlane == 255)
+	else if(iLayerPlane == ICD_EMPTY_LAYER_PLANE)
 	{
 		ctx_list_t *item = ctx_list_create(0);
 		if(item)
@@ -1081,6 +1087,22 @@ BOOL WINAPI mgdDeleteContext(HGLRC dhglrc)
 	return FALSE;
 }
 
+/* DrvCopyContext was the one name missing from the list at the top of this file. */
+BOOL WINAPI mgdCopyContext(HGLRC dhrcSource, HGLRC dhrcDest, UINT fuMask)
+{
+	icdlog("ENTRY: mgdCopyContext(%p, %p, %u)\n", dhrcSource, dhrcDest, fuMask);
+
+	ctx_list_t *source = ctx_list_lookup(dhrcSource);
+	ctx_list_t *dest = ctx_list_lookup(dhrcDest);
+
+	if(source == NULL || dest == NULL)
+		return FALSE;
+
+	uint32_t copied = mglCopyContext((uint32_t)source->hwrc, (uint32_t)dest->hwrc, fuMask);
+
+	return copied != 0;
+}
+
 int WINAPI mgdDescribePixelFormat(HDC hdc, int iPixelFormat, UINT nBytes, LPPIXELFORMATDESCRIPTOR ppfd)
 {
 	icdlog("ENTRY: mgdDescribePixelFormat(%p, %d, %u, %p)\n", hdc, iPixelFormat, nBytes, ppfd);
@@ -1104,26 +1126,37 @@ int WINAPI mgdDescribePixelFormat(HDC hdc, int iPixelFormat, UINT nBytes, LPPIXE
  * and remap result to wglCreateContextAttribsARB return.
  */
 typedef HGLRC (WINAPI *wglCreateLayerContext_t)(HDC hdc, int iLayer);
+
 static HGLRC systemAllocateHGLRC(HDC hdc)
 {
 	HMODULE libgl32 = GetModuleHandleA("opengl32.dll");
-	if(libgl32 != NULL)
+	if(libgl32 == NULL)
 	{
-		if(libgl32 == DLLModule)
-		{
-			/* this library IS opengl32.dll, prevent loops */
-			return NULL;
-		}
-		
-		wglCreateLayerContext_t ctxProc = (wglCreateLayerContext_t)GetProcAddress(libgl32, "wglCreateLayerContext");
-		
-		if(ctxProc)
-		{
-			return ctxProc(hdc, 255);
-		}
+		return NULL;
 	}
-	
-	return NULL;
+
+	if(libgl32 == DLLModule)
+	{
+		/* this library IS opengl32.dll, prevent loops */
+		return NULL;
+	}
+
+	wglCreateLayerContext_t ctxProc = (wglCreateLayerContext_t)GetProcAddress(libgl32, "wglCreateLayerContext");
+	if(ctxProc == NULL)
+	{
+		return NULL;
+	}
+
+	HGLRC emptyContext = ctxProc(hdc, ICD_EMPTY_LAYER_PLANE);
+	if(emptyContext != NULL)
+	{
+		return emptyContext;
+	}
+
+	/* Windows NT checks the layer index against the overlay planes of the pixel format before the
+	   call reaches the driver and refuses 255 with ERROR_INVALID_PARAMETER, where Windows 9x passes
+	   it through. Layer 0 is accepted everywhere; the caller drops the context that comes with it. */
+	return ctxProc(hdc, 0);
 }
 
 HGLRC WINAPI wglCreateContextAttribsARB(HDC hDC, HGLRC hShareContext, const int *attribList)
@@ -1172,6 +1205,17 @@ HGLRC WINAPI wglCreateContextAttribsARB(HDC hDC, HGLRC hShareContext, const int 
 		item = ctx_list_lookup(dhdcrc_replacement);
 		if(item)
 		{
+			HGLRC placeholderContext = item->hwrc;
+			if(placeholderContext != NULL)
+			{
+				/* the layer 0 fallback above brought a real context along, nothing uses it */
+				size_t sharedCount = ctx_list_count_hwrc(placeholderContext);
+				if(sharedCount == 1)
+				{
+					mglDeleteContext((uint32_t)placeholderContext);
+				}
+			}
+
 			item->hwrc = hwrc;
 			icdlog("  maped hShareContext: %p => %p\n", hShareContext, shc_hwrc);
 			icdlog("  maped hdcrc: %p => %p => %p\n", hdcrc, dhdcrc_replacement, hwrc);
