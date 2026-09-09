@@ -97,6 +97,13 @@ static void icdlog(const char *fmt, ...)
 /* The layer index that asks for an empty context, see mgdCreateLayerContext. */
 #define ICD_EMPTY_LAYER_PLANE 255
 
+/* Set while systemAllocateHGLRC() asks opengl32.dll for a placeholder handle. Windows NT
+ * refuses ICD_EMPTY_LAYER_PLANE before the call reaches the driver, so the fallback goes
+ * through layer 0 -- and layer 0 would otherwise create a real hardware context that has to
+ * be thrown away again a few lines later.
+ */
+static int placeholder_context_wanted = 0;
+
 // Number of entries expected for various versions of OpenGL
 #define OPENGL_VERSION_100_ENTRIES      306
 #define OPENGL_VERSION_110_ENTRIES      336
@@ -1040,6 +1047,16 @@ HGLRC WINAPI mgdCreateLayerContext(HDC hdc, int iLayerPlane)
 	
 	if(iLayerPlane == 0)
 	{
+		if(placeholder_context_wanted)
+		{
+			ctx_list_t *placeholder = ctx_list_create(0);
+			if(placeholder)
+			{
+				return placeholder->dhglrc;
+			}
+			return NULL;
+		}
+
 		return mgdCreateContext(hdc);
 	}
 	/*
@@ -1155,8 +1172,12 @@ static HGLRC systemAllocateHGLRC(HDC hdc)
 
 	/* Windows NT checks the layer index against the overlay planes of the pixel format before the
 	   call reaches the driver and refuses 255 with ERROR_INVALID_PARAMETER, where Windows 9x passes
-	   it through. Layer 0 is accepted everywhere; the caller drops the context that comes with it. */
-	return ctxProc(hdc, 0);
+	   it through. Layer 0 is accepted everywhere, and the flag keeps it from building a context. */
+	placeholder_context_wanted = 1;
+	HGLRC layerZeroContext = ctxProc(hdc, 0);
+	placeholder_context_wanted = 0;
+
+	return layerZeroContext;
 }
 
 HGLRC WINAPI wglCreateContextAttribsARB(HDC hDC, HGLRC hShareContext, const int *attribList)
@@ -1205,17 +1226,6 @@ HGLRC WINAPI wglCreateContextAttribsARB(HDC hDC, HGLRC hShareContext, const int 
 		item = ctx_list_lookup(dhdcrc_replacement);
 		if(item)
 		{
-			HGLRC placeholderContext = item->hwrc;
-			if(placeholderContext != NULL)
-			{
-				/* the layer 0 fallback above brought a real context along, nothing uses it */
-				size_t sharedCount = ctx_list_count_hwrc(placeholderContext);
-				if(sharedCount == 1)
-				{
-					mglDeleteContext((uint32_t)placeholderContext);
-				}
-			}
-
 			item->hwrc = hwrc;
 			icdlog("  maped hShareContext: %p => %p\n", hShareContext, shc_hwrc);
 			icdlog("  maped hdcrc: %p => %p => %p\n", hdcrc, dhdcrc_replacement, hwrc);
