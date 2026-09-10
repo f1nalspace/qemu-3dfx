@@ -2031,6 +2031,8 @@ static void processFRet(MesaPTState *s)
         case FEnum_glFinish:
         case FEnum_glFlush:
             markGuestGLAlive(s);
+            /* The only per-frame call a guest that presents without a swap still makes. */
+            MesaDrawableRecheck();
             break;
         case FEnum_glMapBuffer:
         case FEnum_glMapBufferARB:

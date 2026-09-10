@@ -57,6 +57,7 @@ static struct {
      * has a drawable smaller than the guest desktop, and only this says how much smaller.
      */
     int guest_client_width, guest_client_height, guest_client_changed, was_windowed_guest;
+    int last_drawable_width, last_drawable_height;
 } blit;
 
 void MesaSetGuestDrawable(const int client_width, const int client_height)
@@ -573,6 +574,70 @@ void MesaBlitScale(void)
     blit_diag(path, fullscreen, v, drawable_context);
 }
 
+static const char *scaler_what(const uint32_t FEnum)
+{
+    switch (FEnum) {
+        case FEnum_glBlitFramebuffer:    return "glBlitFramebuffer";
+        case FEnum_glBlitFramebufferEXT: return "glBlitFramebufferEXT";
+        case FEnum_glScissor:            return "glScissor";
+        case FEnum_glViewport:           return "glViewport";
+        default:                         return "andere";
+    }
+}
+/* Why the render scaler did or did not touch a box. It only ever fires from the FIFO, so a
+ * guest that presents without SwapBuffers -- Diablo II over DirectDraw does -- leaves no
+ * trace in blit_diag() at all, and every condition below has to be readable on its own.
+ * Repeats are dropped, so a running game costs one line per state change.
+ */
+static void scaler_diag(const char *what, const int *v, const int drawable_context,
+                        const int framebuffer_binding, const int fullscreen,
+                        const int windowed_guest, const int acted, const uint32_t *box)
+{
+    static char last_line[256];
+    char line[256];
+
+    if (!blit_diagnostics_enabled())
+        return;
+    snprintf(line, sizeof(line),
+        "qemu-3dfx scaler: %-16s gast=%dx%d flaeche=%dx%d kontext=%d fbo=%d vollbild=%d "
+        "fenstergast=%d hatswap=%d scaleroff=%d gewirkt=%d box=%d,%d %dx%d",
+        what, v[0], v[1] & 0x7FFFU, v[2], v[3], drawable_context, framebuffer_binding,
+        fullscreen, windowed_guest, blit.has_swap, RenderScalerOff(), acted,
+        box[0], box[1], box[2], box[3]);
+    if (!strcmp(line, last_line))
+        return;
+    strncpy(last_line, line, sizeof(last_line) - 1);
+    fprintf(stderr, "%s\n", line);
+}
+
+/* The drawable can change without the guest noticing -- Strg+Alt+F does it -- and a guest that
+ * sets its viewport once and never again has nobody to put it through the scaler afterwards.
+ * MesaBlitScale() would do it, but it hangs on wglSwapBuffers, and a guest that presents with
+ * glFlush alone (Diablo II over DirectDraw does) never gets there. glFlush and glFinish are
+ * the calls such a guest still makes every frame, so the check lives here: two integers
+ * compared, and the boxes go through only when the drawable really changed.
+ */
+void MesaDrawableRecheck(void)
+{
+    int v[4];
+    const int fullscreen = mesa_gui_fullscreen(v);
+    const int drawable_width = v[2], drawable_height = v[3];
+    int drawable_context;
+    uint32_t box[4];
+
+    if ((drawable_width == blit.last_drawable_width) && (drawable_height == blit.last_drawable_height))
+        return;
+    blit.last_drawable_width = drawable_width;
+    blit.last_drawable_height = drawable_height;
+    blit.render_scaled = 0;
+    drawable_context = DrawableContext();
+    if (drawable_context)
+        blit_reapply_guest_boxes();
+    for (int i = 0; i < 4; i++)
+        box[i] = blit.guest_viewport[i];
+    scaler_diag("flaeche neu", v, drawable_context, 0, fullscreen, 0, blit.render_scaled, box);
+}
+
 void MesaRenderScaler(const uint32_t FEnum, void *args)
 {
     MESA_PFN(PFNGLGETINTEGERVPROC, glGetIntegerv);
@@ -612,7 +677,10 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
         default:
             return;
     }
-    if (DrawableContext() && !framebuffer_binding
+    const int drawable_context = DrawableContext();
+    int acted = 0;
+
+    if (drawable_context && !framebuffer_binding
             && (v[3] > (v[1] & 0x7FFFU))
             && (fullscreen || !blit.has_swap) && !windowed_guest
             && !RenderScalerOff()) {
@@ -631,6 +699,9 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
         }
         blit.adj = blit_adj;
         blit.render_scaled = 1;
+        acted = 1;
     }
+    scaler_diag(scaler_what(FEnum), v, drawable_context, framebuffer_binding, fullscreen,
+                windowed_guest, acted, box);
 }
 
