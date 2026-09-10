@@ -56,7 +56,7 @@ static struct {
      * unknown. A program that draws into a window instead of switching the display mode
      * has a drawable smaller than the guest desktop, and only this says how much smaller.
      */
-    int guest_client_width, guest_client_height, guest_client_changed;
+    int guest_client_width, guest_client_height, guest_client_changed, was_windowed_guest;
 } blit;
 
 void MesaSetGuestDrawable(const int client_width, const int client_height)
@@ -383,10 +383,11 @@ static void blit_diag(const int path, const int fullscreen, const int *v,
     pixel_guest_fbo = probe_guest_framebuffer;
 
     snprintf(line, sizeof(line),
-        "qemu-3dfx blit: %-13s vollbild=%d gast=%dx%d flaeche=%dx%d kontext=%d scaleroff=%d "
+        "qemu-3dfx blit: %-13s vollbild=%d gast=%dx%d flaeche=%dx%d fenster=%dx%d kontext=%d scaleroff=%d "
         "sichtfeld=%d,%d %dx%d lesen=%d(0x%04x) zeichnen=%d(0x%04x) proben=%d "
         "punkt0=%06x punktfbo=%06x fehler=0x%04x",
         blit_path_name(path), fullscreen, v[0], v[1] & 0x7FFFU, v[2], v[3],
+        blit.guest_client_width, blit.guest_client_height,
         drawable_context, RenderScalerOff(),
         view[0], view[1], view[2], view[3],
         read_binding, read_buffer, draw_binding, draw_buffer, sample_buffers,
@@ -460,12 +461,20 @@ void MesaBlitScale(void)
     /* The window size arrives with the first swap, so boxes the render scaler already enlarged
      * have to be put back: from here on the blit carries a windowed guest, and a viewport that
      * is still scaled would draw the scene magnified into the guest's own drawable.
+     *
+     * Only a guest that is or was drawing into a smaller window may do this. Everyone else --
+     * a guest that switches the display mode, Diablo II does -- reports a new client size too,
+     * and resetting the scaler underneath it drops its picture into the lower left corner.
      */
     if (blit.guest_client_changed) {
+        const int windowed_case = windowed_guest || blit.was_windowed_guest;
         blit.guest_client_changed = 0;
-        blit.render_scaled = 0;
-        if (drawable_context)
-            blit_reapply_guest_boxes();
+        blit.was_windowed_guest = windowed_guest;
+        if (windowed_case) {
+            blit.render_scaled = 0;
+            if (drawable_context)
+                blit_reapply_guest_boxes();
+        }
     }
     blit_probe_before_scaling(v);
 
