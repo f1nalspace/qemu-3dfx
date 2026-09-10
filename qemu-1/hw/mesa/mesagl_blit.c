@@ -52,7 +52,39 @@ static struct {
     int guest_viewport[4], guest_scissor[4];
     int guest_viewport_seen, guest_scissor_seen;
     int render_scaled, last_fullscreen;
+    /* Client size of the guest's own GL window, reported by the wrapper, zero while
+     * unknown. A program that draws into a window instead of switching the display mode
+     * has a drawable smaller than the guest desktop, and only this says how much smaller.
+     */
+    int guest_client_width, guest_client_height, guest_client_changed;
 } blit;
+
+void MesaSetGuestDrawable(const int client_width, const int client_height)
+{
+    if ((client_width == blit.guest_client_width) && (client_height == blit.guest_client_height))
+        return;
+    blit.guest_client_width = client_width;
+    blit.guest_client_height = client_height;
+    blit.guest_client_changed = 1;
+}
+
+/* Swap the guest desktop for the guest window wherever the scalers measure against it.
+ * Returns whether it did, because a window needs scaling even when QEMU itself is not in
+ * full screen -- that is the one case the old condition did not cover.
+ */
+static int blit_use_guest_client_size(int *v)
+{
+    const int surface_width = v[0], surface_height = v[1] & 0x7FFFU;
+    const int client_width = blit.guest_client_width, client_height = blit.guest_client_height;
+
+    if (!client_width || !client_height)
+        return 0;
+    if ((client_width >= surface_width) && (client_height >= surface_height))
+        return 0;
+    v[0] = client_width;
+    v[1] = (v[1] & 0x8000U) | (client_height & 0x7FFFU);
+    return 1;
+}
 static unsigned blit_program_setup(void)
 {
     MESA_PFN(PFNGLATTACHSHADERPROC,       glAttachShader);
@@ -408,6 +440,7 @@ void MesaBlitScale(void)
     MESA_PFN(PFNGLBINDFRAMEBUFFERPROC,          glBindFramebuffer);
 
     int v[4], fullscreen = mesa_gui_fullscreen(v), drawable_context, path = BLIT_PATH_IDLE;
+    const int windowed_guest = blit_use_guest_client_size(v);
     blit.has_swap = 1;
 
     if (blit.adj) {
@@ -424,6 +457,16 @@ void MesaBlitScale(void)
         if (drawable_context)
             blit_reapply_guest_boxes();
     }
+    /* The window size arrives with the first swap, so boxes the render scaler already enlarged
+     * have to be put back: from here on the blit carries a windowed guest, and a viewport that
+     * is still scaled would draw the scene magnified into the guest's own drawable.
+     */
+    if (blit.guest_client_changed) {
+        blit.guest_client_changed = 0;
+        blit.render_scaled = 0;
+        if (drawable_context)
+            blit_reapply_guest_boxes();
+    }
     blit_probe_before_scaling(v);
 
     const int guest_width = v[0], guest_height = v[1] & 0x7FFFU;
@@ -435,7 +478,7 @@ void MesaBlitScale(void)
      * boxes before it draws, this one enlarges the finished frame. Which one carries depends
      * on the title -- a guest whose boxes the scaler never got to see is left to this one.
      */
-    const int render_scaler_carries = fullscreen && !RenderScalerOff() && blit.render_scaled;
+    const int render_scaler_carries = fullscreen && !windowed_guest && !RenderScalerOff() && blit.render_scaled;
 
     if (drawable_context && guest_width && guest_height && size_differs
             && !render_scaler_carries) {
@@ -525,6 +568,7 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
 {
     MESA_PFN(PFNGLGETINTEGERVPROC, glGetIntegerv);
     int v[4], fullscreen = mesa_gui_fullscreen(v), framebuffer_binding, blit_adj = 0;
+    const int windowed_guest = blit_use_guest_client_size(v);
     uint32_t *box;
 
     PFN_CALL(glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer_binding));
@@ -561,7 +605,7 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
     }
     if (DrawableContext() && !framebuffer_binding
             && (v[3] > (v[1] & 0x7FFFU))
-            && (fullscreen || !blit.has_swap)
+            && (fullscreen || !blit.has_swap) && !windowed_guest
             && !RenderScalerOff()) {
         int aspect = (v[1] & (1 << 15))? 0:1,
             offs_x = v[2] - ((v[0] * 1.f * v[3]) / (v[1] & 0x7FFFU));

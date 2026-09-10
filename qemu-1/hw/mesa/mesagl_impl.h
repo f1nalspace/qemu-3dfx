@@ -77,5 +77,6 @@ void MesaContextAttest(const char *, int *);
 void MesaBlitFree(void);
 void MesaBlitScale(void);
 void MesaRenderScaler(const uint32_t, void *);
+void MesaSetGuestDrawable(const int, const int);
 
 #endif //MESAGL_IMPL_H

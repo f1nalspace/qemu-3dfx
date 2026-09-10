@@ -2335,6 +2335,8 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                     s->MesaVer = (uint32_t)((val >> 12) & 0xFFU) | ((val & 0xFFFU) << 8);
                     s->mglCntxAtt = 0;
                     MGLTmpContext();
+                    /* Whatever the last process left behind does not describe this one. */
+                    MesaSetGuestDrawable(0, 0);
                     DPRINTF("DLL loaded");
                 }
                 break;
@@ -2532,6 +2534,15 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
             case 0xFDC:
                 do {
                     uint8_t *func = s->fifo_ptr + (MGLSHM_SIZE - PAGE_SIZE);
+                    /* Read before MGLFuncHandler: a name it does not know is answered with
+                     * argsp[0] = 0, and argsp[0] is the width.
+                     */
+                    if (strncmp((const char *)func, "wglSetDrawableSize3DFX", 64) == 0) {
+                        uint32_t *argsp = (uint32_t *)(func + ALIGNED(strnlen((const char *)func, 64)));
+                        DPRINTF("guest drawable %dx%d", argsp[0], argsp[1]);
+                        MesaSetGuestDrawable(argsp[0], argsp[1]);
+                        break;
+                    }
                     MGLFuncHandler((const char *)func);
                     if (strncmp((const char *)func, "wglCreateContextAttribsARB", 64) == 0) {
                         uint32_t *argsp = (uint32_t *)(func + ALIGNED(strnlen((const char *)func, 64)));

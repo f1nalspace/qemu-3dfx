@@ -17360,6 +17360,39 @@ uint32_t PT_CALL mglUseFontOutlinesW(uint32_t arg0, uint32_t arg1, uint32_t arg2
     return TRUE;
 }
 
+/* The host owns the whole QEMU window once GL takes over, and nothing ever tells it how
+ * large the guest's own GL window is. Without that size the scaler measures against the
+ * guest desktop, and a program that draws into a window instead of switching the display
+ * mode ends up unscaled in the lower left corner with the rest of the window black.
+ * Reported only when it changes, so a running game pays one GetClientRect per frame.
+ */
+static void ReportDrawableSize(HDC hdc)
+{
+    static LONG lastClientWidth, lastClientHeight;
+    HWND drawableWindow = WindowFromDC(hdc);
+    RECT clientRect;
+    BOOL haveClientRect;
+    LONG clientWidth, clientHeight;
+
+    if (drawableWindow == NULL)
+        return;
+    haveClientRect = GetClientRect(drawableWindow, &clientRect);
+    if (!haveClientRect)
+        return;
+    clientWidth = clientRect.right - clientRect.left;
+    clientHeight = clientRect.bottom - clientRect.top;
+    if ((clientWidth == lastClientWidth) && (clientHeight == lastClientHeight))
+        return;
+    lastClientWidth = clientWidth;
+    lastClientHeight = clientHeight;
+    do {
+        WGL_FUNCP("wglSetDrawableSize3DFX");
+        argsp[0] = (uint32_t)clientWidth;
+        argsp[1] = (uint32_t)clientHeight;
+        ptm[0xFDC >> 2] = MESAGL_MAGIC;
+    } while (0);
+}
+
 int WINAPI wglSwapBuffers (HDC hdc)
 {
     static POINT last_pos;
@@ -17367,6 +17400,7 @@ int WINAPI wglSwapBuffers (HDC hdc)
     uint32_t ret, *swapRet = &mfifo[(MGLSHM_SIZE - ALIGNED(1)) >> 2];
     DWORD t = GetTickCount();
     CURSORINFO ci = { .cbSize = sizeof(CURSORINFO) };
+    ReportDrawableSize(hdc);
     if (((t - timestamp) >= 16) &&
             display_device_supported() && GetCursorInfo(&ci)) {
         if (ci.flags != CURSOR_SHOWING)
