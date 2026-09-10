@@ -385,6 +385,12 @@ static void TmpContextPurge(void)
         void *ctx0 = (void *)ctx[n];
         GL_DELETECONTEXT(ctx[n]);
         DPRINTF_COND((ctx[n] == 0), "MESAGL curr %d cntx [%p] purge %d", n, ctx0, 1);
+        /* The cached attribute array still describes the context that was just
+         * destroyed. Left standing, the next wglCreateContextAttribsARB with the same
+         * attributes counts as a repeat request, skips the creation and hands the guest
+         * a NULL context -- WineD3D then tears down its last context and dereferences it.
+         */
+        CompareAttribArray(NULL);
     }
 }
 

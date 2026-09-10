@@ -208,6 +208,12 @@ static void TmpContextPurge(void)
         BOOL ret = wglFuncs.DeleteContext(hRC[n]);
         DPRINTF("MESAGL curr %d cntx [%p] purge %d", n, hRC[n], (ret)? 1:0);
         hRC[n] = 0;
+        /* The cached attribute array still describes the context that was just
+         * destroyed. Left standing, the next wglCreateContextAttribsARB with the same
+         * attributes counts as a repeat request, skips the creation and hands the guest
+         * a NULL context -- WineD3D then tears down its last context and dereferences it.
+         */
+        CompareAttribArray(NULL);
     }
 }
 
