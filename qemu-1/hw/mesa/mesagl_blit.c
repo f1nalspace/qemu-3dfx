@@ -471,6 +471,19 @@ void MesaBlitScale(void)
                 PFN_CALL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
             PFN_CALL(glEnableVertexAttribArray(0));
             PFN_CALL(glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0));
+            /* Read the guest image out first. Without an FBO the source IS the default
+             * framebuffer, and the letterbox quad below paints over the whole of it --
+             * copying afterwards would hand the shader a black texture.
+             */
+            if (!save_map.read_binding) {
+                PFN_CALL(glActiveTexture(GL_TEXTURE0));
+                PFN_CALL(glGenTextures(1, &screen_texture));
+                PFN_CALL(glBindTexture(GL_TEXTURE_2D, screen_texture));
+                PFN_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
+                PFN_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
+                PFN_CALL(glCopyTexImage2D(GL_TEXTURE_2D, 0, (FRAMEBUFFER_SRGB_(save_map) && ScalerSRGBCorr())?
+                            GL_SRGB:GL_RGBA, 0,0, guest_width,guest_height, 0));
+            }
             if (target_x || target_y) {
                 PFN_CALL(glUniform1i(blit.black, GL_TRUE));
                 PFN_CALL(glViewport(0,0,  drawable_width, drawable_height));
@@ -489,13 +502,6 @@ void MesaBlitScale(void)
             }
             else {
                 path = BLIT_PATH_COPY_TEXTURE;
-                PFN_CALL(glActiveTexture(GL_TEXTURE0));
-                PFN_CALL(glGenTextures(1, &screen_texture));
-                PFN_CALL(glBindTexture(GL_TEXTURE_2D, screen_texture));
-                PFN_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
-                PFN_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
-                PFN_CALL(glCopyTexImage2D(GL_TEXTURE_2D, 0, (FRAMEBUFFER_SRGB_(save_map) && ScalerSRGBCorr())?
-                            GL_SRGB:GL_RGBA, 0,0, guest_width,guest_height, 0));
                 PFN_CALL(glUniform1i(blit.black, GL_FALSE));
                 PFN_CALL(glViewport(target_x,target_y,  target_width,target_height));
                 PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)); /* scale */
