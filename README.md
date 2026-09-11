@@ -21,6 +21,7 @@ The 8.2.x and 7.2.x patches are carried along unchanged and have not been tested
 - **The guest's gamma ramp no longer reaches the host screen.** A crashing game used to leave the whole host desktop dark. `QEMU_3DFX_HOST_GAMMA=1` restores the old behaviour.
 - **GL takes over the window only on the first `SwapBuffers`**, not on `SetPixelFormat`. Renderers that draw into an FBO and read back into guest video memory keep their picture.
 - **Fullscreen and window scaling for GL and Glide:** the guest window size is reported to the host, the image is scaled and centred with letterboxing, the viewport is restored when fullscreen is toggled, and the Glide window can be resized at runtime.
+- **The pointer stays in the window.** A held pointer uses SDL's relative mouse mode, is warped back to the centre when it leaves the middle of the window, and the grab is taken again after focus changes. On this host SDL's window grab alone let the pointer escape. `QEMU_3DFX_RELATIVE_MOUSE=0` falls back to the plain window grab.
 - **Write-only buffer maps without a round trip:** `glMapBufferRange` with write access returns guest memory, and flushed ranges reach the host as `glBufferSubData` in the command queue.
 - **Fixes:** a crash when a context was recreated after the level-0 context was purged, a missing bound on the vertex array destination, window handover restoring the display and the pointer grab.
 - **Diagnostics:** a frame counter and a flight recorder, see below.
@@ -76,7 +77,9 @@ The 8.2.x and 7.2.x patches are carried along unchanged and have not been tested
 |---|---|
 | `QEMU_3DFX_HOST_GAMMA=1` | let the guest's gamma ramp reach the host screen again |
 | `QEMU_3DFX_FPS=1` | count finished frames (SwapBuffers and ReadPixels) and print them once per second |
-| `QEMU_3DFX_UI_DIAG=1` | log size and scaling decisions of the GL window |
+| `QEMU_3DFX_UI_DIAG=1` | log size and scaling decisions of the GL window, and every pointer grab transition |
+| `QEMU_3DFX_GRAB_DIAG=1` | log only the pointer grab transitions and window sizes of the SDL front end |
+| `QEMU_3DFX_RELATIVE_MOUSE=0` | hold the pointer with the window grab alone, without relative mouse mode and re-centring |
 | `QEMU_3DFX_FLIGHT=<file>` | flight recorder: every access to the pass-through registers with a timestamp, kept in memory and written when the GL program ends and when QEMU exits |
 | `QEMU_3DFX_FLIGHT_LEVEL=1\|2` | level 2 also records every queued call |
 | `QEMU_3DFX_FLIGHT_MB=<n>` | size of the recorder's ring buffer (default 1024) |

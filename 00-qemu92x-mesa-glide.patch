@@ -156,7 +156,7 @@ diff -Nru ../orig/qemu-9.2.2/include/ui/console.h ./include/ui/console.h
  void graphic_hw_update(QemuConsole *con);
  void graphic_hw_update_done(QemuConsole *con);
  void graphic_hw_invalidate(QemuConsole *con);
-@@ -475,4 +478,21 @@
+@@ -475,4 +478,22 @@
                                        size_t size,
                                        Error **errp);
  
@@ -165,6 +165,7 @@ diff -Nru ../orig/qemu-9.2.2/include/ui/console.h ./include/ui/console.h
 +void glide_release_window(void *, void *);
 +int glide_window_stat(const int);
 +int glide_gui_fullscreen(int *, int *);
++int glide_gui_drawable(int *, int *);
 +void glide_renderer_stat(const int);
 +
 +/* mglcntx.c */
@@ -178,7 +179,6 @@ diff -Nru ../orig/qemu-9.2.2/include/ui/console.h ./include/ui/console.h
 +int mesa_gui_fullscreen(int *);
 +
  #endif
-
 diff -Nru ../orig/qemu-9.2.2/meson.build ./meson.build
 --- ../orig/qemu-9.2.2/meson.build
 +++ ./meson.build
@@ -323,7 +323,191 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  #include "qemu/cutils.h"
  #include "ui/console.h"
  #include "ui/input.h"
-@@ -135,6 +136,7 @@
+@@ -48,6 +49,183 @@
+ static SDL_Cursor *sdl_cursor_normal;
+ static SDL_Cursor *sdl_cursor_hidden;
+ static int absolute_enabled;
++
++static int fxui_grab_val(const int grab);
++
++/* qemu-3dfx: the pointer grab is dropped in half a dozen places and taken in as many, and
++ * sdl_grab_start() even declines silently when the window has no input focus. When it
++ * goes missing there is nothing to look at afterwards, so this writes down every
++ * transition. Switched on with QEMU_3DFX_GRAB_DIAG=1. See docs/LOG.md.
++ */
++static int grab_diagnostics_enabled(void)
++{
++    static int enabled = -1;
++
++    if (enabled < 0) {
++        const char *value = getenv("QEMU_3DFX_UI_DIAG");
++        if (!value) {
++            value = getenv("QEMU_3DFX_GRAB_DIAG");
++        }
++        enabled = (value && *value != '0') ? 1 : 0;
++    }
++    return enabled;
++}
++
++/* The other half of the picture: which sizes the three parties see. The guest surface is
++ * what QEMU shows, the window is what SDL was asked for, and the drawable is what the
++ * guest's GL context really renders into. They drift apart in full screen, because
++ * SDL_SetWindowSize() is documented to do nothing there -- "Fullscreen windows
++ * automatically match the size of the display mode". Printed only when something
++ * changes, otherwise it would arrive once per presented frame.
++ */
++static void view_diag(const char *what, struct sdl2_console *scon)
++{
++    static int last_line[7];
++    int window_width = 0, window_height = 0;
++    int drawable_width = 0, drawable_height = 0;
++    int surface_w = 0, surface_h = 0;
++    int line[7];
++
++    if (!grab_diagnostics_enabled() || scon == NULL || scon->real_window == NULL) {
++        return;
++    }
++    SDL_GetWindowSize(scon->real_window, &window_width, &window_height);
++    SDL_GL_GetDrawableSize(scon->real_window, &drawable_width, &drawable_height);
++    if (scon->surface) {
++        surface_w = surface_width(scon->surface);
++        surface_h = surface_height(scon->surface);
++    }
++
++    line[0] = gui_fullscreen;
++    line[1] = surface_w;      line[2] = surface_h;
++    line[3] = window_width;   line[4] = window_height;
++    line[5] = drawable_width; line[6] = drawable_height;
++    if (!memcmp(line, last_line, sizeof(line))) {
++        return;
++    }
++    memcpy(last_line, line, sizeof(line));
++
++    fprintf(stderr, "qemu-3dfx view: %-30s vollbild=%d gast=%dx%d fenster=%dx%d flaeche=%dx%d\n",
++            what, gui_fullscreen, surface_w, surface_h,
++            window_width, window_height, drawable_width, drawable_height);
++}
++
++static char grab_caller[128];
++
++static void grab_diag(const char *what)
++{
++    if (grab_diagnostics_enabled()) {
++        struct sdl2_console *scon = &sdl2_console[0];
++        int sdl_holds = (scon && scon->real_window)? SDL_GetWindowGrab(scon->real_window):-1;
++        fprintf(stderr, "qemu-3dfx grab: %-30s grab=%d sdl=%d rel=%d fullscreen=%d absolute=%d gemerkt=%d%s\n",
++                what, gui_grab, sdl_holds, SDL_GetRelativeMouseMode(),
++                gui_fullscreen, absolute_enabled, fxui_grab_val(0), grab_caller);
++        grab_caller[0] = '\0';
++    }
++}
++
++/* QEMU keeps its own gui_grab, SDL keeps the real one, and the two can drift apart -- a
++ * window that SDL destroyed and rebuilt, or an SDL that dropped the grab on a focus
++ * change of its own accord. QEMU then believes it holds the pointer while the pointer
++ * walks out of the window, which is what the user sees. Ask SDL, say so, and put it
++ * right. Idempotent, so it can be called from every event that could have disturbed it.
++ */
++/* The window grab alone does not confine the pointer on this host: measured 17 times in
++ * one session, the pointer left the window while QEMU *and* SDL both reported the grab as
++ * held, and grab_resync() never found a disagreement to fix (docs/LOG.md [396]).
++ *
++ * Relative mouse mode is the mechanism SDL keeps working for exactly this: it hides the
++ * cursor, holds it in place and delivers nothing but deltas -- which is what a guest with
++ * a PS/2 mouse wants anyway. QEMU's SDL front end only ever switches it off, never on.
++ *
++ * QEMU_3DFX_RELATIVE_MOUSE=0 falls back to the window grab alone.
++ */
++static int relative_mouse_mode_wanted(void)
++{
++    static int wanted = -1;
++
++    if (wanted < 0) {
++        const char *value = getenv("QEMU_3DFX_RELATIVE_MOUSE");
++        wanted = (value && *value == '0') ? 0 : 1;
++    }
++    return wanted;
++}
++
++/* SDL keeps reporting grab and relative mode as held while the pointer walks out of the
++ * window: relative mode is bound to the window that has input focus, and a focus change
++ * leaves it nominally on and effectively off. Measured in one session: 88 focus losses
++ * while the grab was held, 84 times the pointer left the window, and 77 times the focus
++ * came back with nobody putting the grab into force again -- QEMU believes it holds the
++ * pointer, so neither grab_resync() nor a click into the window re-takes it. Switching it
++ * off and on again is what Ctrl+Alt+G does by hand, and the only thing that works.
++ * See docs/LOG.md [406].
++ */
++/* Set when the pointer left the window although we hold it, cleared when it comes back. */
++static int grab_escaped;
++
++static void grab_reassert(struct sdl2_console *scon, const char *what)
++{
++    int relative_result = 0;
++    SDL_Window *focus_window;
++
++    if (!gui_grab || (scon == NULL) || (scon->real_window == NULL)) {
++        return;
++    }
++    focus_window = SDL_GetKeyboardFocus();
++    SDL_SetRelativeMouseMode(SDL_FALSE);
++    SDL_SetWindowGrab(scon->real_window, SDL_FALSE);
++    SDL_SetWindowGrab(scon->real_window, SDL_TRUE);
++    if (relative_mouse_mode_wanted()
++            && !qemu_input_is_absolute(scon->dcl.con) && !absolute_enabled) {
++        SDL_ClearError();
++        relative_result = SDL_SetRelativeMouseMode(SDL_TRUE);
++    }
++    /* Nobody ever looked at what SDL answers here. Relative mode belongs to the window with
++     * keyboard focus, so a window that was just hidden and shown again can take the call and
++     * do nothing with it -- and that is what a lost pointer looks like. docs/LOG.md [408].
++     */
++    if (grab_diagnostics_enabled()) {
++        fprintf(stderr, "qemu-3dfx grab: %-30s fokus=%s relativ=%d %s\n", what,
++                (focus_window == scon->real_window)? "ja":"nein", relative_result,
++                (relative_result)? SDL_GetError():"");
++    }
++    grab_diag(what);
++}
++
++static void grab_resync(struct sdl2_console *scon, const char *what)
++{
++    SDL_bool sdl_holds;
++    SDL_bool relative_is_on;
++
++    if (scon == NULL || scon->real_window == NULL) {
++        return;
++    }
++    sdl_holds = SDL_GetWindowGrab(scon->real_window);
++    if (gui_grab && !sdl_holds) {
++        if (grab_diagnostics_enabled()) {
++            fprintf(stderr, "qemu-3dfx grab: %-30s SDL hatte den Griff nicht -- nachgezogen\n", what);
++        }
++        SDL_SetWindowGrab(scon->real_window, SDL_TRUE);
++    }
++    else if (!gui_grab && sdl_holds) {
++        if (grab_diagnostics_enabled()) {
++            fprintf(stderr, "qemu-3dfx grab: %-30s SDL hielt den Griff noch -- abgegeben\n", what);
++        }
++        SDL_SetWindowGrab(scon->real_window, SDL_FALSE);
++    }
++
++    /* And the same for the relative mode. Left on without a grab it looks like a hung
++     * pointer: SDL hides it, holds it in the middle and reports nothing but deltas. That
++     * is what a player sees after killing a game with Alt+F4 -- docs/LOG.md [398].
++     */
++    relative_is_on = SDL_GetRelativeMouseMode();
++    if (!gui_grab && relative_is_on) {
++        if (grab_diagnostics_enabled()) {
++            fprintf(stderr, "qemu-3dfx grab: %-30s relativer Modus lief ohne Griff -- aus\n", what);
++        }
++        SDL_SetRelativeMouseMode(SDL_FALSE);
++    }
++}
+ static bool guest_cursor;
+ static int guest_x, guest_y;
+ static SDL_Cursor *guest_sprite;
+@@ -135,6 +313,7 @@
      if (scon->real_renderer) {
          SDL_DestroyRenderer(scon->real_renderer);
          scon->real_renderer = NULL;
@@ -331,7 +515,184 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      }
      SDL_DestroyWindow(scon->real_window);
      scon->real_window = NULL;
-@@ -568,6 +570,29 @@
+@@ -146,9 +325,11 @@
+         return;
+     }
+ 
++    grab_diag("window_resize: vorher");
+     SDL_SetWindowSize(scon->real_window,
+                       surface_width(scon->surface),
+                       surface_height(scon->surface));
++    grab_diag("window_resize: nachher");
+ }
+ 
+ static void sdl2_redraw(struct sdl2_console *scon)
+@@ -236,11 +417,23 @@
+     SDL_ShowCursor(SDL_ENABLE);
+ }
+ 
+-static void sdl_grab_start(struct sdl2_console *scon)
++/* qemu-3dfx: which of the twelve call sites was it? The state alone does not say, and
++ * that is exactly what the first round of diagnostics was missing. */
++static void grab_note_caller(const char *function_name, int line_number)
++{
++    if (grab_diagnostics_enabled()) {
++        snprintf(grab_caller, sizeof(grab_caller), " <- %s:%d", function_name, line_number);
++    }
++}
++
++static void sdl_grab_start_at(struct sdl2_console *scon, const char *function_name, int line_number)
+ {
+     QemuConsole *con = scon ? scon->dcl.con : NULL;
+ 
++    grab_note_caller(function_name, line_number);
++
+     if (!con || !qemu_console_is_graphic(con)) {
++        grab_diag("grab_start: kein Grafikkonsolen-Fenster");
+         return;
+     }
+     /*
+@@ -249,6 +442,7 @@
+      * application (SDL bug).
+      */
+     if (!(SDL_GetWindowFlags(scon->real_window) & SDL_WINDOW_INPUT_FOCUS)) {
++        grab_diag("grab_start: ABGELEHNT, kein Fokus");
+         return;
+     }
+     if (guest_cursor) {
+@@ -260,18 +454,31 @@
+         sdl_hide_cursor(scon);
+     }
+     SDL_SetWindowGrab(scon->real_window, SDL_TRUE);
++    if (relative_mouse_mode_wanted()
++            && !qemu_input_is_absolute(scon->dcl.con) && !absolute_enabled) {
++        SDL_SetRelativeMouseMode(SDL_TRUE);
++    }
+     gui_grab = 1;
+     sdl_update_caption(scon);
++    grab_diag("grab_start: genommen");
+ }
+ 
+-static void sdl_grab_end(struct sdl2_console *scon)
++static void sdl_grab_end_at(struct sdl2_console *scon, const char *function_name, int line_number)
+ {
++    grab_note_caller(function_name, line_number);
++    if (relative_mouse_mode_wanted()) {
++        SDL_SetRelativeMouseMode(SDL_FALSE);
++    }
+     SDL_SetWindowGrab(scon->real_window, SDL_FALSE);
+     gui_grab = 0;
+     sdl_show_cursor(scon);
+     sdl_update_caption(scon);
++    grab_diag("grab_end: abgegeben");
+ }
+ 
++#define sdl_grab_start(scon) sdl_grab_start_at((scon), __func__, __LINE__)
++#define sdl_grab_end(scon)   sdl_grab_end_at((scon), __func__, __LINE__)
++
+ static void absolute_mouse_grab(struct sdl2_console *scon)
+ {
+     int mouse_x, mouse_y;
+@@ -293,6 +500,7 @@
+             absolute_mouse_grab(&sdl2_console[0]);
+         }
+     } else if (absolute_enabled) {
++        grab_diag("mouse_mode_change: relativ");
+         if (!gui_fullscreen) {
+             sdl_grab_end(&sdl2_console[0]);
+         }
+@@ -351,6 +559,8 @@
+         }
+         SDL_SetWindowFullscreen(scon->real_window, 0);
+     }
++    view_diag("toggle_full_screen", scon);
++    grab_resync(scon, "toggle_full_screen");
+     sdl2_redraw(scon);
+ }
+ 
+@@ -483,6 +693,48 @@
+     }
+ }
+ 
++/* SDL takes the relative-mouse call, answers success, and the pointer walks out of the
++ * window anyway -- measured 53 times in one session, with the window holding keyboard focus
++ * and SDL_SetRelativeMouseMode() returning 0 every time (docs/LOG.md [408]). On this host
++ * relative mode confines nothing, so the pointer is held the way it was held before that
++ * call existed: warp it back to the middle and swallow the movement the warp itself makes.
++ * Where relative mode does work the pointer never leaves the middle, and none of this runs.
++ */
++static int warp_target_x = -1, warp_target_y = -1;
++
++static int motion_is_our_own_warp(SDL_Event *ev)
++{
++    if ((warp_target_x < 0) || (ev->motion.x != warp_target_x) || (ev->motion.y != warp_target_y)) {
++        return 0;
++    }
++    warp_target_x = -1;
++    warp_target_y = -1;
++    return 1;
++}
++
++static void keep_pointer_in_window(struct sdl2_console *scon, SDL_Event *ev)
++{
++    int window_width = 0, window_height = 0;
++
++    if (!gui_grab || !relative_mouse_mode_wanted() || absolute_enabled
++            || qemu_input_is_absolute(scon->dcl.con)) {
++        return;
++    }
++    SDL_GetWindowSize(scon->real_window, &window_width, &window_height);
++    if (!window_width || !window_height) {
++        return;
++    }
++    const int centre_x = window_width / 2, centre_y = window_height / 2;
++    const int slack_x = window_width / 4, slack_y = window_height / 4;
++
++    if ((abs(ev->motion.x - centre_x) < slack_x) && (abs(ev->motion.y - centre_y) < slack_y)) {
++        return;
++    }
++    warp_target_x = centre_x;
++    warp_target_y = centre_y;
++    SDL_WarpMouseInWindow(scon->real_window, centre_x, centre_y);
++}
++
+ static void handle_mousemotion(SDL_Event *ev)
+ {
+     int max_x, max_y;
+@@ -491,6 +743,9 @@
+     if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
+         return;
+     }
++    if (motion_is_our_own_warp(ev)) {
++        return;
++    }
+ 
+     if (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
+         int scr_w, scr_h;
+@@ -512,6 +767,7 @@
+         sdl_send_mouse_event(scon, ev->motion.xrel, ev->motion.yrel,
+                              ev->motion.x, ev->motion.y, ev->motion.state);
+     }
++    keep_pointer_in_window(scon, ev);
+ }
+ 
+ static void handle_mousebutton(SDL_Event *ev)
+@@ -531,6 +787,14 @@
+             sdl_grab_start(scon);
+         }
+     } else {
++        /* A click may re-take the grab, but only after the pointer really got away: every
++         * reassert moves the pointer, and a pointer that moves under a click is a click
++         * that lands somewhere else.
++         */
++        if ((ev->type == SDL_MOUSEBUTTONUP) && (bev->button == SDL_BUTTON_LEFT)
++                && gui_grab && grab_escaped && !qemu_input_is_absolute(scon->dcl.con)) {
++            grab_reassert(scon, "mausklick: Griff erneuert");
++        }
+         if (ev->type == SDL_MOUSEBUTTONDOWN) {
+             buttonstate |= SDL_BUTTON(bev->button);
+         } else {
+@@ -568,6 +832,35 @@
      qemu_input_event_sync();
  }
  
@@ -345,10 +706,12 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +{
 +    int ret = fxui_grab_val(0);
 +    fxui_grab_val(0x80);
++    grab_diag("fxui_focus_lost");
 +    return ret;
 +}
 +static void fxui_focus_gained(struct sdl2_console *scon)
 +{
++    grab_diag("fxui_focus_gained");
 +    if (fxui_grab_val(0)) {
 +        if (gui_grab) {
 +            sdl_grab_end(scon);
@@ -356,30 +719,85 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +        }
 +        sdl_grab_start(scon);
 +    }
++    else {
++        /* The grab survived the focus change on paper only -- put it into force again. */
++        grab_reassert(scon, "focus_gained: Griff erneuert");
++    }
 +}
 +
  static void handle_windowevent(SDL_Event *ev)
  {
      struct sdl2_console *scon = get_scon_from_window(ev->window.windowID);
-@@ -592,6 +617,7 @@
+@@ -577,6 +870,12 @@
+         return;
+     }
+ 
++    if (grab_diagnostics_enabled()) {
++        char event_name[64];
++        snprintf(event_name, sizeof(event_name), "windowevent %u", ev->window.event);
++        grab_diag(event_name);
++    }
++
+     switch (ev->window.event) {
+     case SDL_WINDOWEVENT_RESIZED:
+         {
+@@ -586,17 +885,21 @@
+             info.height = ev->window.data2;
+             dpy_set_ui_info(scon->dcl.con, &info, true);
+         }
++        grab_resync(scon, "RESIZED");
+         sdl2_redraw(scon);
+         break;
+     case SDL_WINDOWEVENT_EXPOSED:
          sdl2_redraw(scon);
          break;
      case SDL_WINDOWEVENT_FOCUS_GAINED:
 +        fxui_focus_gained(scon);
          /* fall through */
      case SDL_WINDOWEVENT_ENTER:
++        grab_escaped = 0;
          if (!gui_grab && (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled)) {
-@@ -607,7 +633,8 @@
+             absolute_mouse_grab(scon);
+         }
++        grab_resync(scon, "FOCUS_GAINED/ENTER");
+         /* If a new console window opened using a hotkey receives the
+          * focus, SDL sends another KEYDOWN event to the new window,
+          * closing the console window immediately after.
+@@ -607,8 +910,12 @@
          scon->ignore_hotkeys = get_mod_state();
          break;
      case SDL_WINDOWEVENT_FOCUS_LOST:
 -        if (gui_grab && !gui_fullscreen) {
++        grab_resync(scon, "FOCUS_LOST");
 +        if (!fxui_focus_lost() && gui_grab && !gui_fullscreen) {
 +            fxui_grab_val(0x80 | gui_grab);
              sdl_grab_end(scon);
++        } else {
++            grab_diag("FOCUS_LOST: Griff behalten");
          }
          break;
-@@ -774,6 +801,455 @@
+     case SDL_WINDOWEVENT_RESTORED:
+@@ -631,8 +938,19 @@
+             scon->hidden = true;
+         }
+         break;
++    case SDL_WINDOWEVENT_LEAVE:
++        /* The pointer just walked out of a window we are supposed to be holding it in.
++         * Whatever SDL reports, that settles it: the grab is not in force.
++         */
++        grab_escaped = gui_grab;
++        grab_reassert(scon, "leave: Griff erneuert");
++        break;
+     case SDL_WINDOWEVENT_SHOWN:
+         scon->hidden = false;
++        /* A window that was hidden and shown again keeps the grab on paper and loses it in
++         * fact -- this is the sequence UT produces when it starts a session.
++         */
++        grab_reassert(scon, "shown: Griff erneuert");
+         break;
+     case SDL_WINDOWEVENT_HIDDEN:
+         scon->hidden = true;
+@@ -774,6 +1092,497 @@
      SDL_QuitSubSystem(SDL_INIT_VIDEO);
  }
  
@@ -396,6 +814,13 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +}
 +static void sdl_gui_restart(struct sdl2_console *scon, SDL_Surface *icon)
 +{
++    grab_diag("gui_restart: Anfang");
++    /* Relative mode is bound to the window that has focus. Carrying it across a destroy
++     * and rebuild leaves SDL holding the pointer for a window that no longer exists.
++     */
++    if (relative_mouse_mode_wanted()) {
++        SDL_SetRelativeMouseMode(SDL_FALSE);
++    }
 +    if (!gui_fullscreen)
 +        SDL_GetWindowPosition(scon->real_window, &scon->x, &scon->y);
 +    fxui_grab_val(0x80 | gui_grab);
@@ -412,6 +837,8 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +     * the guest stops seeing the mouse -- docs/LOG.md [379].
 +     */
 +    SDL_RaiseWindow(scon->real_window);
++    grab_resync(scon, "gui_restart");
++    grab_diag("gui_restart: Ende");
 +}
 +
 +/* State of the hand-over of the window from QEMU's 2D output to the guest's GL
@@ -437,6 +864,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 + */
 +static void wndproc_fxui_gl_takeover(struct sdl_console_cb *s)
 +{
++    grab_diag("fxui_gl_takeover");
 +    SDL_DestroyTexture(s->scon->texture);
 +    SDL_DestroyRenderer(s->scon->real_renderer);
 +    s->scon->real_renderer = NULL;
@@ -482,6 +910,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +}
 +static void wndproc_fxui_prepare(struct sdl_console_cb *s)
 +{
++    grab_diag("fxui_prepare: Anfang");
 +    SDL_GL_SetAttribute(SDL_GL_BUFFER_SIZE, 32);
 +    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE,  24);
 +    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
@@ -542,9 +971,11 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +        sdl2_2d_switch(&s->scon->dcl, s->scon->surface);
 +        s->cwnd_fn(s->scon->real_window, s->hnwnd, s->opaque);
 +    }
++    grab_diag("fxui_prepare: Ende");
 +}
 +static void wndproc_fxui_release(struct sdl_console_cb *s)
 +{
++    grab_diag("fxui_release: Anfang");
 +    if (s->GLon12) {
 +        if (!s->scon->real_renderer)
 +            s->scon->real_renderer = SDL_CreateRenderer(s->scon->real_window, -1 ,0);
@@ -562,6 +993,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    timer_del(s->ts);
 +    timer_free(s->ts);
 +    s->ts = NULL;
++    grab_diag("fxui_release: Ende");
 +}
 +static void sched_wndproc(void *opaque)
 +{
@@ -573,8 +1005,15 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +        wndproc_fxui_prepare(s);
 +    else
 +        wndproc_fxui_release(s);
-+    if (s->res > 0)
++    if (s->res > 0) {
 +        SDL_SetWindowSize(s->scon->real_window, (s->res & 0xFFFFU), (s->res >> 0x10));
++        if (grab_diagnostics_enabled()) {
++            char requested[64];
++            snprintf(requested, sizeof(requested), "SetWindowSize %dx%d",
++                     (int)(s->res & 0xFFFFU), (int)(s->res >> 0x10));
++            view_diag(requested, s->scon);
++        }
++    }
 +    if (s->opaque || !s->render_pause)
 +        graphic_hw_passthrough(s->scon->dcl.con, s->render_pause);
 +}
@@ -591,6 +1030,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +        if (!memcmp(feat, "mesapt", sizeof("mesapt")))
 +            SDL_GL_GetDrawableSize(s->scon->real_window, &sizev[2], &sizev[3]);
 +    }
++    view_diag(feat, s->scon);
 +    return gui_fullscreen;
 +}
 +
@@ -623,6 +1063,12 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    struct sdl_console_cb *s = &scon_cb;
 +
 +    sdl_display_valid("glidept");
++    if (grab_diagnostics_enabled()) {
++        char requested[64];
++        snprintf(requested, sizeof(requested), "glide_prepare %dx%d",
++                 (int)(res & 0xFFFFU), (int)(res >> 0x10));
++        view_diag(requested, &sdl2_console[0]);
++    }
 +    s->scon = &sdl2_console[0];
 +    s->opaque = opaque;
 +    s->cwnd_fn = (void (*)(void *, void *, void *))cwnd_fn;
@@ -707,6 +1153,20 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    if (height)
 +        *height = v[1];
 +    return ret;
++}
++
++/* The drawable is what the GL context really renders into. In a window it follows the
++ * guest surface, in full screen it is the host screen and the guest surface says nothing
++ * about it -- docs/LOG.md [395]. Glide needs the drawable to know how far it may scale.
++ */
++int glide_gui_drawable(int *width, int *height)
++{
++    struct sdl_console_cb *s = &scon_cb;
++
++    sdl_display_valid("glidept");
++    s->scon = &sdl2_console[0];
++    SDL_GL_GetDrawableSize(s->scon->real_window, width, height);
++    return gui_fullscreen;
 +}
 +
 +void glide_renderer_stat(const int activate)
@@ -835,7 +1295,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static const DisplayChangeListenerOps dcl_2d_ops = {
      .dpy_name             = "sdl2-2d",
      .dpy_gfx_update       = sdl2_2d_update,
-@@ -834,6 +1297,10 @@
+@@ -834,6 +1643,10 @@
  
      assert(o->type == DISPLAY_TYPE_SDL);
  
@@ -846,7 +1306,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      if (SDL_GetHintBoolean("QEMU_ENABLE_SDL_LOGGING", SDL_FALSE)) {
          SDL_LogSetAllPriority(SDL_LOG_PRIORITY_VERBOSE);
      }
-@@ -926,6 +1393,7 @@
+@@ -926,6 +1739,7 @@
      g_free(dir);
      if (icon) {
          SDL_SetWindowIcon(sdl2_console[0].real_window, icon);
