@@ -41,6 +41,7 @@ void wrFlushBufObj(uint32_t, mapbufo_t *);
 void wrContextSRGB(int);
 void fgFontGenList(int, int, uint32_t);
 const char *getGLFuncStr(int);
+const char *GLFEnumSymbol(const int);
 void doMesaFunc(int, uint32_t *, uintptr_t *, uintptr_t *);
 void GLBufOAccelCfg(int);
 void GLRenderScaler(int);

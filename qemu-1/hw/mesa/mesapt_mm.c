@@ -24,6 +24,7 @@
 #include "system/address-spaces.h"
 
 #include "mesagl_impl.h"
+#include "mesagl_flight.h"
 
 #define DEBUG_MESAPT
 
@@ -511,6 +512,7 @@ static uint64_t mesapt_read(void *opaque, hwaddr addr, unsigned size)
             break;
     }
 
+    FLIGHT_RECORD(FLIGHT_LEVEL_TRAPS, FLIGHT_TRAP_READ, addr, val);
     return val;
 }
 
@@ -1347,6 +1349,7 @@ static void processArgs(MesaPTState *s)
             break;
         case FEnum_glReadPixels:
             s->parg[2] = (s->pixPackBuf == 0)? VAL(s->fbtm_ptr):s->arg[6];
+            FLIGHT_RECORD(FLIGHT_LEVEL_TRAPS, FLIGHT_READ_PIXELS, 0, s->arg[2] * s->arg[3]);
 #ifdef MESA_FPS_DIAGNOSTICS
             do {
                 const int readpixels_width = s->arg[2], readpixels_height = s->arg[3];
@@ -2253,6 +2256,13 @@ static void processFRet(MesaPTState *s)
     }
 }
 
+/* FIFO entries run so far, for the flight recorder: the difference across one register write
+ * says how much of the guest's queue that write carried. */
+static uint32_t fifo_calls_run;
+
+/* Set by the library detach, acted on once the write that carried it is recorded as done. */
+static bool flight_flush_after_write;
+
 static void processFifo(MesaPTState *s)
 {
     uint32_t *fifoptr = (uint32_t *)s->fifo_ptr;
@@ -2276,6 +2286,9 @@ static void processFifo(MesaPTState *s)
             int numArgs, numData;
             s->FEnum = fifoptr[i++];
             numArgs = GLFEnumArgsCnt(s->FEnum);
+            fifo_calls_run++;
+            FLIGHT_COUNT_FIFO_CALL(s->FEnum);
+            FLIGHT_RECORD(FLIGHT_LEVEL_FIFO_CALLS, FLIGHT_FIFO_CALL, s->FEnum, numArgs);
 #if DEBUG_FIFO
             if (i == (FIRST_FIFO + 1))
                 fprintf(stderr, "FIFO { [%02X] fifo %04x data %04x\n%02X ", FEnum, fifoptr[0], dataptr[0], s->FEnum);
@@ -2292,6 +2305,7 @@ static void processFifo(MesaPTState *s)
             i += numArgs;
             j += numData;
         }
+        FLIGHT_RECORD(FLIGHT_LEVEL_FIFO_CALLS, FLIGHT_FIFO_DONE, 0, i - FIRST_FIFO);
 #if DEBUG_FIFO
         if (i != FIRST_FIFO)
             fprintf(stderr, "\n} [%02X] fifo %04x data %d/%d\n", FEnum, i, j, dataptr[0]);
@@ -2327,6 +2341,9 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     COMMIT_SIGN;
     MesaPTState *s = opaque;
+    const uint32_t fifo_calls_before_write = fifo_calls_run;
+
+    FLIGHT_RECORD(FLIGHT_LEVEL_TRAPS, FLIGHT_TRAP_WRITE, addr, val);
 
     if (addr == 0xFBC) {
         switch (val) {
@@ -2352,6 +2369,7 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                     DPRINTF("%-64s", "DLL unloaded");
                 }
                 FiniMesaGL();
+                flight_flush_after_write = true;
                 break;
         }
     }
@@ -2588,6 +2606,14 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
     }
     else
         DPRINTF("  *WARN* Unhandled mesapt_write(), addr %08x val %08x", (uint32_t)addr, (uint32_t)val);
+
+    FLIGHT_RECORD(FLIGHT_LEVEL_TRAPS, FLIGHT_TRAP_WRITE_DONE, addr, fifo_calls_run - fifo_calls_before_write);
+    /* The guest's GL program has let go of the passthrough, so it is ending anyway: the one
+     * moment a write to disk costs nobody a frame. */
+    if (unlikely(flight_flush_after_write)) {
+        flight_flush_after_write = false;
+        flight_flush(FLIGHT_FLUSH_LIBRARY_DETACH);
+    }
 }
 
 static const MemoryRegionOps mesapt_ops = {
@@ -2626,6 +2652,7 @@ static void mesapt_realize(DeviceState *dev, Error **errp)
 {
     MesaPTState *s = MESAPT(dev);
     mesastat(&s->perfs);
+    flight_init();
 }
 
 static void mesapt_finalize(Object *obj)

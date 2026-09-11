@@ -207,6 +207,12 @@ void fgFontGenList(int first, int count, uint32_t listBase)
     PFN_CALL(glPixelStorei(GL_UNPACK_ALIGNMENT, org_alignment));
 }
 
+/* The symbol as the table spells it, "_glAccum@8". Unlike getGLFuncStr, no side effect. */
+const char *GLFEnumSymbol(const int FEnum)
+{
+    return tblMesaGL[FEnum].sym;
+}
+
 const char *getGLFuncStr(int FEnum)
 {
     if (tblMesaGL[FEnum].impl == 0) {
