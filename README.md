@@ -9,6 +9,7 @@ A step-by-step guide will be published separately.
 ## Tested with
 
 - QEMU 9.2.2 with `00-qemu92x-mesa-glide.patch`
+- QEMU 11.1.1 with `00-qemu111x-mesa-glide.patch`: builds on the Linux host, not yet run with a guest. Its WHPX part for Windows hosts is ported but has never been compiled.
 - Linux host (Arch-based), NVIDIA GeForce RTX 3090
 - Windows 98 SE and Windows XP guests
 
@@ -115,6 +116,7 @@ Fixes to QEMU itself, kept apart from the version patch because they have nothin
 
 ## Patches
 
+    00-qemu111x-mesa-glide.patch - QEMU 11.1.x (MESA & Glide), with this fork's changes
     00-qemu92x-mesa-glide.patch - QEMU 9.2.x (MESA & Glide), with this fork's changes
     01-qemu82x-mesa-glide.patch - QEMU 8.2.x (MESA & Glide), as inherited
     02-qemu72x-mesa-glide.patch - QEMU 7.2.x (MESA & Glide), as inherited
