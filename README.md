@@ -26,6 +26,14 @@ The 8.2.x and 7.2.x patches are carried along unchanged and have not been tested
 - **Fixes:** a crash when a context was recreated after the level-0 context was purged, a missing bound on the vertex array destination, window handover restoring the display and the pointer grab.
 - **Diagnostics:** a frame counter and a flight recorder, see below.
 
+### QEMU fixes (`fixes/`)
+
+Fixes to QEMU itself, kept apart from the version patch because they have nothing to do with the pass-through. They are applied after the version patch, from inside the QEMU source tree.
+
+- **ES1370 register access narrower than 32 bits.** The Ensoniq Windows driver programs the chip byte- and word-wise. Those writes were dropped and those reads returned all ones, so sound played at a quarter of its rate and the codec always looked busy. Adds trace points.
+- **ES1370 DMA position between audio callbacks.** Estimated from the elapsed time instead of advancing in steps of one audio period. Measured to be accurate, with no audible difference; `QEMU_ES1370_POSITION_ESTIMATE=0` turns it off.
+- **SMB1 for the built-in SMB share.** Windows 9x and 2000/XP speak SMB1 only, which Samba no longer offers by default.
+
 ### Guest wrappers
 
 - Build with the i686 MinGW cross toolchain on Linux, from a clean tree and under `make -j`.
@@ -44,7 +52,7 @@ The 8.2.x and 7.2.x patches are carried along unchanged and have not been tested
 
 **On the host**
 
-- KVM, and QEMU built from this tree with the 9.2 patch.
+- KVM, and QEMU built from this tree with the 9.2 patch. The fixes in `fixes/` are needed for ES1370 sound and for SMB shares.
 - **QEMU and the guest wrappers built from the same commit.** Both carry the short commit id and refuse to work together otherwise; Windows then only reports that the DLL cannot start. After changing the commit, rebuild the wrappers from a clean build directory.
 - For Glide: OpenGLide as the host library (`libglide2x.so`, `libglide3x.so`) on the library path.
 
@@ -83,6 +91,7 @@ The 8.2.x and 7.2.x patches are carried along unchanged and have not been tested
 | `QEMU_3DFX_FLIGHT=<file>` | flight recorder: every access to the pass-through registers with a timestamp, kept in memory and written when the GL program ends and when QEMU exits |
 | `QEMU_3DFX_FLIGHT_LEVEL=1\|2` | level 2 also records every queued call |
 | `QEMU_3DFX_FLIGHT_MB=<n>` | size of the recorder's ring buffer (default 1024) |
+| `QEMU_ES1370_POSITION_ESTIMATE=0` | with the ES1370 fixes: report the DMA position only as the audio backend advances it |
 
 **`wrapgl32.ext` next to the game executable** (one option per line)
 
@@ -109,3 +118,7 @@ The 8.2.x and 7.2.x patches are carried along unchanged and have not been tested
     00-qemu92x-mesa-glide.patch - QEMU 9.2.x (MESA & Glide), with this fork's changes
     01-qemu82x-mesa-glide.patch - QEMU 8.2.x (MESA & Glide), as inherited
     02-qemu72x-mesa-glide.patch - QEMU 7.2.x (MESA & Glide), as inherited
+
+    fixes/qemu92x-es1370-subword-access.patch - QEMU 9.2.x: ES1370 register access narrower than 32 bits
+    fixes/qemu92x-es1370-dma-position.patch   - QEMU 9.2.x: ES1370 DMA position, on top of the one above
+    fixes/qemu92x-slirp-smb1.patch            - QEMU 9.2.x: SMB1 for the built-in SMB share

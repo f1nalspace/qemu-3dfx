@@ -1,0 +1,20 @@
+net/slirp: let the built-in SMB share accept SMB1
+
+Windows 9x and 2000/XP speak SMB1 only, and Samba requires SMB2 by default since 4.11, so these guests never saw the -netdev user,smb= share.
+
+Apply inside a QEMU 9.2.x source tree: patch -p0 -i ../fixes/qemu92x-slirp-smb1.patch
+
+diff -Nru ../orig/qemu-9.2.2/net/slirp.c ./net/slirp.c
+--- ../orig/qemu-9.2.2/net/slirp.c
++++ ./net/slirp.c
+@@ -990,6 +990,10 @@
+             "smb passwd file=%s/smbpasswd\n"
+             "security = user\n"
+             "map to guest = Bad User\n"
++            /* Windows 9x and 2000/XP speak SMB1 and nothing else, while Samba has
++             * defaulted to SMB2_02 as its minimum since 4.11. Without this the guest
++             * simply never sees the share. This build exists for those guests. */
++            "server min protocol = NT1\n"
+             "load printers = no\n"
+             "printing = bsd\n"
+             "disable spoolss = yes\n"
