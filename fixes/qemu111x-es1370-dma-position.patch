@@ -1,0 +1,158 @@
+hw/audio/es1370: estimate the DMA frame position between audio callbacks
+
+The frame counter only advanced in the audio backend callback, so a polling guest saw steps of one audio period.
+The position is now estimated from the time since the last transfer, bounded by what that transfer moved.
+Measured with Quake III on QEMU 9.2: polls without progress fell from 61.8 % to 2.7 %, with no audible difference. QEMU_ES1370_POSITION_ESTIMATE=0 turns the estimate off.
+
+Apply after qemu111x-es1370-subword-access.patch: patch -p0 -i ../fixes/qemu111x-es1370-dma-position.patch
+
+diff -Nru ../orig/qemu-11.1.1/hw/audio/es1370.c ./hw/audio/es1370.c
+--- ../orig/qemu-11.1.1/hw/audio/es1370.c
++++ ./hw/audio/es1370.c
+@@ -32,6 +32,7 @@
+ #include "migration/vmstate.h"
+ #include "qemu/cutils.h"
+ #include "qemu/module.h"
++#include "qemu/timer.h"
+ #include "qemu/error-report.h"
+ #include "qom/object.h"
+ #include "trace.h"
+@@ -258,6 +259,14 @@
+     uint32_t scount;
+     uint32_t frame_addr;
+     uint32_t frame_cnt;
++    /*
++     * The three below only feed the read-time position estimate. They are
++     * deliberately absent from the vmstate: after a load the first transfer
++     * fills them in again, and until then the estimate simply stays off.
++     */
++    uint32_t frequency;
++    uint32_t last_transfer_dwords;
++    int64_t last_transfer_ns;
+ };
+ 
+ struct ES1370State {
+@@ -402,6 +411,8 @@
+ 
+         b->calc_freq (s, ctl, &old_freq, &new_freq);
+ 
++        d->frequency = new_freq;
++
+         if ((old_fmt != new_fmt) || (old_freq != new_freq)) {
+             d->shift = (new_fmt & 1) + (new_fmt >> 1);
+             trace_es1370_stream_format(i, new_freq,
+@@ -517,10 +528,10 @@
+         break;
+ 
+     case ES1370_REG_PHANTOM_FRAMECNT:
+-        lwarn("writing to phantom frame count 0x%" PRIx64, val);
++        lwarn("writing to phantom frame count 0x%x", val);
+         break;
+     case ES1370_REG_PHANTOM_FRAMEADR:
+-        lwarn("writing to phantom frame address 0x%" PRIx64, val);
++        lwarn("writing to phantom frame address 0x%x", val);
+         break;
+ 
+     case ES1370_REG_ADC_FRAMECNT:
+@@ -543,6 +554,72 @@
+     }
+ }
+ 
++/*
++ * The frame counter only moves when the audio backend calls us, so a guest that
++ * polls it sees a staircase instead of a ramp -- with the default timer period
++ * a step of 10 ms, with a shorter one still 2.7 ms. Real hardware advances it
++ * continuously, and a DirectSound title mixes against exactly this value: it
++ * reads the play position, works out how far ahead it may write, and glitches
++ * when the answer arrives in lumps. Quake III asks 374 times a second and gets
++ * the same answer in 62 % of them.
++ *
++ * So estimate the position at read time from the elapsed time and the sample
++ * rate. The estimate may lead the last transfer, but never by more than that
++ * transfer itself moved -- otherwise a late callback would let the guest write
++ * over data the model has not fetched yet.
++ */
++static bool es1370_position_estimate_enabled(void)
++{
++    static int enabled = -1;
++
++    if (enabled < 0) {
++        const char *setting = getenv("QEMU_ES1370_POSITION_ESTIMATE");
++
++        enabled = (setting == NULL || strcmp(setting, "0") != 0);
++    }
++    return enabled != 0;
++}
++
++static uint32_t es1370_estimated_frame_cnt(ES1370State *s, struct chan *d)
++{
++    const uint32_t nanoseconds_per_second = 1000000000;
++    const uint32_t bytes_per_dword = 4;
++    size_t index = d - &s->chan[0];
++    const struct chan_bits *b = &es1370_chan_bits[index];
++    uint32_t current_dwords = d->frame_cnt >> 16;
++    uint32_t buffer_dwords = d->frame_cnt & 0xffff;
++    int64_t elapsed_ns;
++    uint64_t elapsed_bytes;
++    uint32_t elapsed_dwords;
++
++    if (!es1370_position_estimate_enabled()) {
++        return d->frame_cnt;
++    }
++    if (d->frequency == 0 || d->last_transfer_ns == 0) {
++        return d->frame_cnt;
++    }
++    if (!(s->ctl & b->ctl_en) || (s->sctl & b->sctl_pause)) {
++        return d->frame_cnt;
++    }
++
++    elapsed_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - d->last_transfer_ns;
++    if (elapsed_ns <= 0) {
++        return d->frame_cnt;
++    }
++
++    elapsed_bytes = ((uint64_t)elapsed_ns * d->frequency) / nanoseconds_per_second;
++    elapsed_bytes <<= d->shift;
++    elapsed_dwords = elapsed_bytes / bytes_per_dword;
++
++    if (elapsed_dwords > d->last_transfer_dwords) {
++        elapsed_dwords = d->last_transfer_dwords;
++    }
++    if (current_dwords + elapsed_dwords > buffer_dwords) {
++        return d->frame_cnt;
++    }
++    return buffer_dwords | ((current_dwords + elapsed_dwords) << 16);
++}
++
+ static uint32_t es1370_read_register(ES1370State *s, uint32_t addr)
+ {
+     uint32_t val;
+@@ -585,9 +662,9 @@
+     case ES1370_REG_DAC2_FRAMECNT:
+         d += (addr - ES1370_REG_DAC1_FRAMECNT) >> 3;
+     framecnt:
++        val = es1370_estimated_frame_cnt(s, d);
+         trace_es1370_frame_count_rd(d - &s->chan[0],
+-            d->frame_cnt >> 16, d->frame_cnt & 0xffff);
+-        val = d->frame_cnt;
++            val >> 16, val & 0xffff);
+         break;
+ 
+     case ES1370_REG_ADC_FRAMEADR:
+@@ -681,6 +758,7 @@
+     int csc_bytes = (csc + 1) << d->shift;
+     int cnt = d->frame_cnt >> 16;
+     int size = d->frame_cnt & 0xffff;
++    uint32_t previous_dwords = d->frame_cnt >> 16;
+     if (size < cnt) {
+         return;
+     }
+@@ -756,6 +834,8 @@
+     }
+ 
+     d->leftover = (transferred + d->leftover) & 3;
++    d->last_transfer_dwords = (d->frame_cnt >> 16) - previous_dwords;
++    d->last_transfer_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+     trace_es1370_transfer_audio(index,
+         d->frame_cnt >> 16, d->frame_cnt & 0xffff,
+         d->scount >> 16, d->scount & 0xffff,

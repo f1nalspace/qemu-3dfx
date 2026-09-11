@@ -124,3 +124,7 @@ Fixes to QEMU itself, kept apart from the version patch because they have nothin
     fixes/qemu92x-es1370-subword-access.patch - QEMU 9.2.x: ES1370 register access narrower than 32 bits
     fixes/qemu92x-es1370-dma-position.patch   - QEMU 9.2.x: ES1370 DMA position, on top of the one above
     fixes/qemu92x-slirp-smb1.patch            - QEMU 9.2.x: SMB1 for the built-in SMB share
+
+    fixes/qemu111x-es1370-subword-access.patch - QEMU 11.1.x: ES1370 register access narrower than 32 bits
+    fixes/qemu111x-es1370-dma-position.patch   - QEMU 11.1.x: ES1370 DMA position, on top of the one above
+    fixes/qemu111x-slirp-smb1.patch            - QEMU 11.1.x: SMB1 for the built-in SMB share
