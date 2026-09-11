@@ -469,6 +469,7 @@ struct mglOptions {
     int xstrYear;
 };
 static int swapCur, swapFps, texClampFix;
+static int mapBufferInGuestOff;
 static int parse_value(const char *str, const char *tok, int *val)
 {
     int ret = (memcmp(str, tok, strlen(tok)))? 0:1;
@@ -540,6 +541,8 @@ static void parse_options(struct mglOptions *opt)
             swapCur = ((i == 1) && v)? 0:swapCur;
             i = parse_value(line, "FpsLimit,", &v);
             swapFps = (i == 1)? (v & 0x7FU):swapFps;
+            i = parse_value(line, "MapBufferInGuestOff,", &v);
+            mapBufferInGuestOff = ((i == 1) && v)? 1:mapBufferInGuestOff;
         }
         fclose(f);
     }
@@ -550,6 +553,204 @@ static void parse_options(struct mglOptions *opt)
     if (FIFO_EN && ((mfifo[0] + (_nargs + 1)) < MAX_FIFO) && (mdata[0] < MAX_DATA))  \
         fifoAddEntry(&pt[1], _func, _nargs); \
     else *pt0 = _func \
+
+/* Write-only glMapBufferRange without a round trip: the application writes into guest memory, and every range
+ * it hands back reaches the host as a glBufferSubData queued in the FIFO, its bytes in the FIFO data area. */
+#ifndef GL_TRUE
+#define GL_TRUE 1
+#endif
+#ifndef GL_MAP_READ_BIT
+#define GL_MAP_READ_BIT               0x0001
+#define GL_MAP_WRITE_BIT              0x0002
+#define GL_MAP_INVALIDATE_RANGE_BIT   0x0004
+#define GL_MAP_INVALIDATE_BUFFER_BIT  0x0008
+#define GL_MAP_FLUSH_EXPLICIT_BIT     0x0010
+#endif
+#ifndef GL_MAP_PERSISTENT_BIT
+#define GL_MAP_PERSISTENT_BIT         0x0040
+#define GL_MAP_COHERENT_BIT           0x0080
+#endif
+#define MAPPED_UPLOAD_SLOT_COUNT 8
+#define MAPPED_UPLOAD_ARGUMENT_COUNT 4
+/* One upload may take at most this share of the FIFO data area, so it always fits once the FIFO is flushed. */
+#define MAPPED_UPLOAD_DATA_AREA_DIVISOR 4
+#define MAPPED_UPLOAD_MAX_BYTES ((MAX_DATA * sizeof(uint32_t)) / MAPPED_UPLOAD_DATA_AREA_DIVISOR)
+/* The host tells the wrapper's own uploads from an application's glBufferSubData by this data pointer. */
+#define MAPPED_UPLOAD_DATA_POINTER_IN_FIFO 0
+#define TRACKED_BINDING_COUNT 16
+#define NO_BUFFER 0
+#define BINDING_NOT_TRACKED (-1)
+
+/* Which buffer each target has bound, so that two buffers mapped at the same time on one target stay apart.
+ * A target missing here is one the wrapper cannot vouch for, and maps on it take the host path. */
+typedef struct {
+    uint32_t target;
+    uint32_t buffer;
+} tracked_binding_t;
+static tracked_binding_t trackedBindings[TRACKED_BINDING_COUNT];
+static int trackedBindingCount;
+
+static int binding_index(uint32_t target)
+{
+    for (int bindingIndex = 0; bindingIndex < trackedBindingCount; bindingIndex++) {
+        if (trackedBindings[bindingIndex].target == target)
+            return bindingIndex;
+    }
+    return BINDING_NOT_TRACKED;
+}
+
+static void binding_note(uint32_t target, uint32_t buffer)
+{
+    int bindingIndex = binding_index(target);
+    if ((bindingIndex == BINDING_NOT_TRACKED) && (trackedBindingCount < TRACKED_BINDING_COUNT))
+        bindingIndex = trackedBindingCount++;
+    if (bindingIndex == BINDING_NOT_TRACKED)
+        return;
+    trackedBindings[bindingIndex].target = target;
+    trackedBindings[bindingIndex].buffer = buffer;
+}
+
+static void binding_forget(uint32_t target)
+{
+    const int bindingIndex = binding_index(target);
+    if (bindingIndex == BINDING_NOT_TRACKED)
+        return;
+    trackedBindingCount--;
+    trackedBindings[bindingIndex] = trackedBindings[trackedBindingCount];
+}
+
+static void binding_forget_all(void)
+{
+    trackedBindingCount = 0;
+}
+
+/* The buffer bound to target, or NO_BUFFER when nothing is bound or the wrapper does not know. */
+static uint32_t binding_buffer(uint32_t target)
+{
+    const int bindingIndex = binding_index(target);
+    return (bindingIndex == BINDING_NOT_TRACKED)? NO_BUFFER:trackedBindings[bindingIndex].buffer;
+}
+
+typedef struct {
+    int active;
+    uint32_t buffer;
+    uint32_t offset;
+    uint32_t length;
+    uint32_t access;
+    unsigned char *staging;
+    uint32_t stagingCapacity;
+} mapped_upload_t;
+static mapped_upload_t mappedUploads[MAPPED_UPLOAD_SLOT_COUNT];
+
+/* A buffer is mapped at most once, so its name alone finds the mapping, whichever target the call names. */
+static mapped_upload_t *mapped_upload_of_buffer(uint32_t buffer)
+{
+    for (int slotIndex = 0; (buffer != NO_BUFFER) && (slotIndex < MAPPED_UPLOAD_SLOT_COUNT); slotIndex++) {
+        mapped_upload_t *upload = &mappedUploads[slotIndex];
+        if (upload->active && (upload->buffer == buffer))
+            return upload;
+    }
+    return 0;
+}
+
+static mapped_upload_t *mapped_upload_find(uint32_t target)
+{
+    const uint32_t buffer = binding_buffer(target);
+    return mapped_upload_of_buffer(buffer);
+}
+
+static int mapped_upload_wanted(uint32_t length, uint32_t access)
+{
+    const uint32_t hostOnlyAccessBits = GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+    /* Without one of these, GL keeps the bytes the application leaves alone, and uploading the whole range would overwrite them. */
+    const uint32_t untouchedBytesUndefinedBits = GL_MAP_FLUSH_EXPLICIT_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT;
+    if (mapBufferInGuestOff || (length == 0) || (length > MAPPED_UPLOAD_MAX_BYTES))
+        return 0;
+    if (((access & GL_MAP_WRITE_BIT) == 0) || (access & hostOnlyAccessBits))
+        return 0;
+    return (access & untouchedBytesUndefinedBits)? 1:0;
+}
+
+/* A host map of a buffer that still holds a guest mapping means the application dropped that mapping without an unmap. */
+static void mapped_upload_abandon(uint32_t target)
+{
+    mapped_upload_t *upload = mapped_upload_find(target);
+    if (upload)
+        upload->active = 0;
+}
+
+/* Deleting a mapped buffer unmaps it, and a deleted buffer falls back to no buffer on every target it was bound to. */
+static void mapped_upload_forget_buffers(uint32_t count, const uint32_t *buffers)
+{
+    for (uint32_t bufferIndex = 0; bufferIndex < count; bufferIndex++) {
+        const uint32_t buffer = buffers[bufferIndex];
+        mapped_upload_t *upload = mapped_upload_of_buffer(buffer);
+        if (upload)
+            upload->active = 0;
+        for (int bindingIndex = 0; bindingIndex < trackedBindingCount; bindingIndex++) {
+            if (trackedBindings[bindingIndex].buffer == buffer)
+                trackedBindings[bindingIndex].buffer = NO_BUFFER;
+        }
+    }
+}
+
+static void *mapped_upload_begin(uint32_t target, uint32_t offset, uint32_t length, uint32_t access)
+{
+    const uint32_t buffer = binding_buffer(target);
+    if (buffer == NO_BUFFER)
+        return 0;
+    mapped_upload_t *upload = mapped_upload_of_buffer(buffer);
+    for (int slotIndex = 0; !upload && (slotIndex < MAPPED_UPLOAD_SLOT_COUNT); slotIndex++) {
+        if (!mappedUploads[slotIndex].active)
+            upload = &mappedUploads[slotIndex];
+    }
+    if (!upload)
+        return 0;
+    upload->active = 0;
+    const uint32_t stagingBytes = ALIGNED(length);
+    if (upload->stagingCapacity < stagingBytes) {
+        /* Whole pages: WineD3D drops the buffer object of a dynamic buffer whose mapping is not 16-byte aligned (wined3d/buffer.c:1183). */
+        if (upload->staging)
+            VirtualFree(upload->staging, 0, MEM_RELEASE);
+        upload->staging = VirtualAlloc(NULL, stagingBytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        upload->stagingCapacity = (upload->staging)? stagingBytes:0;
+        if (!upload->staging)
+            return 0;
+    }
+    upload->buffer = buffer;
+    upload->offset = offset;
+    upload->length = length;
+    upload->access = access;
+    upload->active = 1;
+    return upload->staging;
+}
+
+static void mapped_upload_queue(uint32_t target, const mapped_upload_t *upload, uint32_t rangeOffset, uint32_t byteCount)
+{
+    if ((byteCount == 0) || (rangeOffset > upload->length) || (byteCount > (upload->length - rangeOffset)))
+        return;
+    const uint32_t dataWords = ALIGNED(byteCount) >> 2;
+    const int fifoWouldOverflow = (mfifo[0] + MAPPED_UPLOAD_ARGUMENT_COUNT + 1) >= MAX_FIFO;
+    const int dataWouldOverflow = (mdata[0] + dataWords) >= MAX_DATA;
+    FIFO_FLUSH(fifoWouldOverflow || dataWouldOverflow);
+    const uint32_t bufferOffset = upload->offset + rangeOffset;
+    const uint32_t sourceAddress = (uint32_t)(upload->staging + rangeOffset);
+    fifoAddData(0, sourceAddress, byteCount);
+    pt[1] = target; pt[2] = bufferOffset; pt[3] = byteCount; pt[4] = MAPPED_UPLOAD_DATA_POINTER_IN_FIFO;
+    pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glBufferSubData, MAPPED_UPLOAD_ARGUMENT_COUNT);
+}
+
+/* Returns 1 if the buffer bound to target held a guest mapping, which is then gone. */
+static int mapped_upload_end(uint32_t target)
+{
+    mapped_upload_t *upload = mapped_upload_find(target);
+    if (!upload)
+        return 0;
+    if ((upload->access & GL_MAP_FLUSH_EXPLICIT_BIT) == 0)
+        mapped_upload_queue(target, upload, 0, upload->length);
+    upload->active = 0;
+    return 1;
+}
 
 
 /* Start - generated by mstub_genfunc */
@@ -755,8 +956,9 @@ void PT_CALL glBindAttribLocationARB(uint32_t arg0, uint32_t arg1, uint32_t arg2
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glBindAttribLocationARB, 3);
 }
 void PT_CALL glBindBuffer(uint32_t arg0, uint32_t arg1) {
-    pt[1] = arg0; pt[2] = arg1; 
+    pt[1] = arg0; pt[2] = arg1;
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glBindBuffer, 2);
+    binding_note(arg0, arg1);
     pixPackBuf = (arg0 == GL_PIXEL_PACK_BUFFER)? arg1:pixPackBuf;
     pixUnpackBuf = (arg0 == GL_PIXEL_UNPACK_BUFFER)? arg1:pixUnpackBuf;
     queryBuf = (arg0 == GL_QUERY_BUFFER)? arg1:queryBuf;
@@ -770,8 +972,9 @@ void PT_CALL glBindBuffer(uint32_t arg0, uint32_t arg1) {
     }
 }
 void PT_CALL glBindBufferARB(uint32_t arg0, uint32_t arg1) {
-    pt[1] = arg0; pt[2] = arg1; 
+    pt[1] = arg0; pt[2] = arg1;
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glBindBufferARB, 2);
+    binding_note(arg0, arg1);
     pixPackBuf = (arg0 == GL_PIXEL_PACK_BUFFER)? arg1:pixPackBuf;
     pixUnpackBuf = (arg0 == GL_PIXEL_UNPACK_BUFFER)? arg1:pixUnpackBuf;
     queryBuf = (arg0 == GL_QUERY_BUFFER)? arg1:queryBuf;
@@ -785,16 +988,19 @@ void PT_CALL glBindBufferARB(uint32_t arg0, uint32_t arg1) {
     }
 }
 void PT_CALL glBindBufferBase(uint32_t arg0, uint32_t arg1, uint32_t arg2) {
-    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; 
+    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2;
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glBindBufferBase, 3);
+    binding_note(arg0, arg2);
 }
 void PT_CALL glBindBufferBaseEXT(uint32_t arg0, uint32_t arg1, uint32_t arg2) {
-    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; 
+    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2;
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glBindBufferBaseEXT, 3);
+    binding_note(arg0, arg2);
 }
 void PT_CALL glBindBufferBaseNV(uint32_t arg0, uint32_t arg1, uint32_t arg2) {
-    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; 
+    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2;
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glBindBufferBaseNV;
+    binding_forget(arg0);
 }
 void PT_CALL glBindBufferOffsetEXT(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3) {
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; 
@@ -805,16 +1011,19 @@ void PT_CALL glBindBufferOffsetNV(uint32_t arg0, uint32_t arg1, uint32_t arg2, u
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glBindBufferOffsetNV;
 }
 void PT_CALL glBindBufferRange(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4) {
-    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; 
+    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4;
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glBindBufferRange, 5);
+    binding_note(arg0, arg2);
 }
 void PT_CALL glBindBufferRangeEXT(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4) {
-    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; 
+    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4;
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glBindBufferRangeEXT, 5);
+    binding_note(arg0, arg2);
 }
 void PT_CALL glBindBufferRangeNV(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4) {
-    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; 
+    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4;
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glBindBufferRangeNV;
+    binding_forget(arg0);
 }
 void PT_CALL glBindBuffersBase(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3) {
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; 
@@ -948,13 +1157,15 @@ void PT_CALL glBindTransformFeedbackNV(uint32_t arg0, uint32_t arg1) {
 void PT_CALL glBindVertexArray(uint32_t arg0) {
     pt[1] = arg0; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glBindVertexArray, 1);
+    binding_forget(GL_ELEMENT_ARRAY_BUFFER);
     vtxArry.vao = arg0;
     vtxArry.arrayBuf = vtxArry.vao;
     vtxArry.elemArryBuf = vtxArry.vao;
 }
 void PT_CALL glBindVertexArrayAPPLE(uint32_t arg0) {
-    pt[1] = arg0; 
+    pt[1] = arg0;
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glBindVertexArrayAPPLE;
+    binding_forget(GL_ELEMENT_ARRAY_BUFFER);
 }
 void PT_CALL glBindVertexBuffer(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3) {
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; 
@@ -1199,6 +1410,9 @@ void PT_CALL glBufferStorageMemEXT(uint32_t arg0, uint32_t arg1, uint32_t arg2, 
 }
 void PT_CALL glBufferSubData(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3) {
     uint32_t offst = arg1, remain = arg2, ptr = arg3;
+    /* The host reads a null data pointer as the wrapper's own FIFO upload; from an application it would only crash here. */
+    if (ptr == MAPPED_UPLOAD_DATA_POINTER_IN_FIFO)
+        return;
     while(remain) {
         uint32_t chunk = (remain > (MGLFBT_SIZE - PAGE_SIZE))? (MGLFBT_SIZE - PAGE_SIZE):remain;
         FBTMMCPY(&fbtm[(MGLFBT_SIZE - ALIGNED(chunk)) >> 2], (unsigned char *)ptr, chunk);
@@ -1211,6 +1425,8 @@ void PT_CALL glBufferSubData(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32
 }
 void PT_CALL glBufferSubDataARB(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3) {
     uint32_t offst = arg1, remain = arg2, ptr = arg3;
+    if (ptr == MAPPED_UPLOAD_DATA_POINTER_IN_FIFO)
+        return;
     while(remain) {
         uint32_t chunk = (remain > (MGLFBT_SIZE - PAGE_SIZE))? (MGLFBT_SIZE - PAGE_SIZE):remain;
         FBTMMCPY(&fbtm[(MGLFBT_SIZE - ALIGNED(chunk)) >> 2], (unsigned char *)ptr, chunk);
@@ -2395,6 +2611,7 @@ void PT_CALL glDeleteBuffers(uint32_t arg0, uint32_t arg1) {
     fifoAddData(0, arg1, arg0*sizeof(uint32_t));
     pt[1] = arg0; pt[2] = arg1; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDeleteBuffers, 2);
+    mapped_upload_forget_buffers(arg0, (const uint32_t *)arg1);
     for (int i = 0; i < arg0; i++) {
         pixPackBuf = (((uint32_t *)arg1)[i] == pixPackBuf)? 0:pixPackBuf;
         pixUnpackBuf = (((uint32_t *)arg1)[i] == pixUnpackBuf)? 0:pixUnpackBuf;
@@ -2413,6 +2630,7 @@ void PT_CALL glDeleteBuffersARB(uint32_t arg0, uint32_t arg1) {
     fifoAddData(0, arg1, arg0*sizeof(uint32_t));
     pt[1] = arg0; pt[2] = arg1; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDeleteBuffersARB, 2);
+    mapped_upload_forget_buffers(arg0, (const uint32_t *)arg1);
     for (int i = 0; i < arg0; i++) {
         pixPackBuf = (((uint32_t *)arg1)[i] == pixPackBuf)? 0:pixPackBuf;
         pixUnpackBuf = (((uint32_t *)arg1)[i] == pixUnpackBuf)? 0:pixUnpackBuf;
@@ -2577,6 +2795,7 @@ void PT_CALL glDeleteVertexArrays(uint32_t arg0, uint32_t arg1) {
     fifoAddData(0, arg1, arg0*sizeof(uint32_t));
     pt[1] = arg0; pt[2] = arg1; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDeleteVertexArrays, 2);
+    binding_forget(GL_ELEMENT_ARRAY_BUFFER);
     for (int i = 0; i < arg0; i++)
         vtxArry.vao = (((uint32_t *)arg1)[i] == vtxArry.vao)? 0:vtxArry.vao;
     vtxArry.arrayBuf = vtxArry.vao;
@@ -3555,7 +3774,12 @@ void PT_CALL glFlush(void) {
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glFlush;
 }
 void PT_CALL glFlushMappedBufferRange(uint32_t arg0, uint32_t arg1, uint32_t arg2) {
-    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; 
+    const mapped_upload_t *guestMapping = mapped_upload_find(arg0);
+    if (guestMapping) {
+        mapped_upload_queue(arg0, guestMapping, arg1, arg2);
+        return;
+    }
+    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2;
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glFlushMappedBufferRange, 3);
 }
 void PT_CALL glFlushMappedBufferRangeAPPLE(uint32_t arg0, uint32_t arg1, uint32_t arg2) {
@@ -6971,21 +7195,29 @@ void PT_CALL glMap2xOES(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t ar
 }
 void * PT_CALL glMapBuffer(uint32_t arg0, uint32_t arg1) {
     uint32_t szBuf;
-    pt[1] = arg0; pt[2] = arg1; 
+    mapped_upload_abandon(arg0);
+    pt[1] = arg0; pt[2] = arg1;
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glMapBuffer;
     szBuf = *pt0;
     return (szBuf & 0x01U)? (void *)&fbtm[(MGLFBT_SIZE - szBuf + 1) >> 2]:(mbufo + szBuf);
 }
 void * PT_CALL glMapBufferARB(uint32_t arg0, uint32_t arg1) {
     uint32_t szBuf;
-    pt[1] = arg0; pt[2] = arg1; 
+    mapped_upload_abandon(arg0);
+    pt[1] = arg0; pt[2] = arg1;
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glMapBufferARB;
     szBuf = *pt0;
     return (szBuf & 0x01U)? (void *)&fbtm[(MGLFBT_SIZE - szBuf + 1) >> 2]:(mbufo + szBuf);
 }
 void * PT_CALL glMapBufferRange(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3) {
     uint32_t szBuf;
-    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; 
+    if (mapped_upload_wanted(arg2, arg3)) {
+        void *guestMapping = mapped_upload_begin(arg0, arg1, arg2, arg3);
+        if (guestMapping)
+            return guestMapping;
+    }
+    mapped_upload_abandon(arg0);
+    pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3;
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glMapBufferRange;
     szBuf = *pt0;
     return (szBuf & 0x01U)? (void *)&fbtm[(MGLFBT_SIZE - szBuf + 1) >> 2]:(mbufo + szBuf);
@@ -12038,14 +12270,18 @@ void PT_CALL glUnlockArraysEXT(void) {
 }
 uint32_t PT_CALL glUnmapBuffer(uint32_t arg0) {
     uint32_t ret;
-    pt[1] = arg0; 
+    if (mapped_upload_end(arg0))
+        return GL_TRUE;
+    pt[1] = arg0;
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glUnmapBuffer;
     ret = *pt0;
     return ret;
 }
 uint32_t PT_CALL glUnmapBufferARB(uint32_t arg0) {
     uint32_t ret;
-    pt[1] = arg0; 
+    if (mapped_upload_end(arg0))
+        return GL_TRUE;
+    pt[1] = arg0;
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glUnmapBufferARB;
     ret = *pt0;
     return ret;
@@ -17251,6 +17487,8 @@ mglMakeCurrent (uint32_t arg0, uint32_t arg1)
     memcpy((char *)&ptVer[1], rev_ptr, 8);
     memcpy(((char *)&ptVer[1] + 8), icdBuild, sizeof(icdBuild));
     ptm[0xFF8 >> 2] = MESAGL_MAGIC;
+    /* Buffer bindings belong to the context that was current before. */
+    binding_forget_all();
     if (!currGLRC) {
         struct mglOptions cfg;
         parse_options(&cfg);

@@ -1468,6 +1468,16 @@ static void processArgs(MesaPTState *s)
             break;
         case FEnum_glBufferSubData:
         case FEnum_glBufferSubDataARB:
+            if (s->arg[3] == 0) {
+                /* A null data pointer is the wrapper's own upload of a write-only map: the bytes follow in the FIFO data. */
+                const uint32_t uploadBytes = s->arg[2];
+                s->datacb = ALIGNED(uploadBytes);
+                s->parg[1] = s->arg[1];
+                s->parg[2] = s->arg[2];
+                s->parg[3] = VAL(s->hshm);
+                break;
+            }
+            /* fall through */
         case FEnum_glGetBufferSubData:
         case FEnum_glGetBufferSubDataARB:
         case FEnum_glNamedBufferSubData:
