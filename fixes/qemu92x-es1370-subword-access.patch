@@ -1,0 +1,233 @@
+hw/audio/es1370: accept register accesses narrower than 32 bits
+
+The Ensoniq Windows driver programs the chip byte- and word-wise, and the memory core passes such accesses to the device unaligned.
+Until now they all fell into the default case: writes were dropped and reads returned all ones, so the DAC stayed at 5512 Hz and the codec always looked busy.
+Adds trace points for the control, status, serial control and codec registers, interrupts and the default cases.
+
+Apply inside a QEMU 9.2.x source tree: patch -p0 -i ../fixes/qemu92x-es1370-subword-access.patch
+
+diff -Nru ../orig/qemu-9.2.2/hw/audio/trace-events ./hw/audio/trace-events
+--- ../orig/qemu-9.2.2/hw/audio/trace-events
++++ ./hw/audio/trace-events
+@@ -7,15 +7,28 @@
+ cs4231_mem_writel_dreg(uint32_t reg, uint32_t old, uint32_t val) "write dreg %d: 0x%02x -> 0x%02x"
+ 
+ # es1370.c
++es1370_codec_rd(uint32_t val) "CODEC -> 0x%08x"
++es1370_codec_wr(uint32_t index, uint32_t data, uint64_t raw) "CODEC <- index 0x%02x data 0x%02x (raw 0x%"PRIx64", dropped: no AK4531 in the model)"
++es1370_control_rd(uint32_t val) "CONTROL -> 0x%08x"
++es1370_control_wr(uint32_t val) "CONTROL <- 0x%08x"
+ es1370_frame_address_rd(int ch, uint32_t addr) "ch=%d addr=0x%08x"
+ es1370_frame_address_wr(int ch, uint32_t addr) "ch=%d addr=0x%08x"
+ es1370_frame_count_rd(int ch, uint32_t curr, uint32_t size) "ch=%d CURR_CT=%u BUF_SIZE=%u"
+ es1370_frame_count_wr(int ch, uint32_t curr, uint32_t size) "ch=%d CURR_CT=%u BUF_SIZE=%u"
++es1370_irq(int level, uint32_t status) "irq=%d STATUS=0x%08x"
+ es1370_lost_interrupt(int ch) "ch=%d lost interrupt"
+ es1370_sample_count_rd(int ch, uint32_t curr, uint32_t num) "ch=%d CURR_SAMP_CT=%u SAMP_CT=%u"
+ es1370_sample_count_wr(int ch, uint32_t curr, uint32_t num) "ch=%d CURR_SAMP_CT=%u SAMP_CT=%u"
++es1370_serial_control_rd(uint32_t val) "SERIAL_CONTROL -> 0x%08x"
++es1370_serial_control_wr(uint32_t val) "SERIAL_CONTROL <- 0x%08x"
++es1370_status_rd(uint32_t val) "STATUS -> 0x%08x"
+ es1370_stream_format(int ch, uint32_t freq, const char *fmt, const char *mode, uint32_t shift) "ch=%d fmt=%u:%s:%s shift=%u"
+ es1370_transfer_audio(int ch, uint32_t f_curr, uint32_t f_size, uint32_t s_curr, uint32_t s_num, uint32_t leftover, bool irq) "ch=%d CURR_CT=%u BUF_SIZE=%u CURR_SAMP_CT=%u SAMP_CT=%u leftover=%u irq=%d"
++es1370_subword_rd(uint32_t addr, uint32_t byte_offset, uint32_t size, uint32_t reg, uint32_t val) "sub-word read 0x%03x+%u (%u bytes) reg=0x%08x -> 0x%08x"
++es1370_subword_wr(uint32_t addr, uint32_t byte_offset, uint32_t size, uint64_t val, uint32_t merged) "sub-word write 0x%03x+%u (%u bytes) <- 0x%"PRIx64" merged=0x%08x"
++es1370_unhandled_rd(uint32_t addr) "unhandled read 0x%03x"
++es1370_unhandled_wr(uint32_t addr, uint32_t val) "unhandled write 0x%03x <- 0x%08x"
++es1370_voice_active(int ch, int on) "ch=%d active=%d"
+ 
+ # hda-codec.c
+ hda_audio_running(const char *stream, int nr, bool running) "st %s, nr %d, run %d"
+diff -Nru ../orig/qemu-9.2.2/hw/audio/es1370.c ./hw/audio/es1370.c
+--- ../orig/qemu-9.2.2/hw/audio/es1370.c
++++ ./hw/audio/es1370.c
+@@ -63,6 +63,10 @@
+ #define ES1370_REG_UART_TEST      0x0a
+ #define ES1370_REG_MEMPAGE        0x0c
+ #define ES1370_REG_CODEC          0x10
++#define CODEC_INDEX_MASK          0x0000ff00
++#define CODEC_SH_INDEX            8
++#define CODEC_DATA_MASK           0x000000ff
++
+ #define ES1370_REG_SERIAL_CONTROL 0x20
+ #define ES1370_REG_DAC1_SCOUNT    0x24
+ #define ES1370_REG_DAC2_SCOUNT    0x28
+@@ -306,13 +310,15 @@
+ static void es1370_update_status (ES1370State *s, uint32_t new_status)
+ {
+     uint32_t level = new_status & (STAT_DAC1 | STAT_DAC2 | STAT_ADC);
++    int interrupt_level = !!level;
+ 
+     if (level) {
+         s->status = new_status | STAT_INTR;
+     } else {
+         s->status = new_status & ~STAT_INTR;
+     }
+-    pci_set_irq(&s->dev, !!level);
++    trace_es1370_irq(interrupt_level, s->status);
++    pci_set_irq(&s->dev, interrupt_level);
+ }
+ 
+ static void es1370_reset (ES1370State *s)
+@@ -437,6 +443,7 @@
+             || ((sctl ^ s->sctl) & b->sctl_pause)) {
+             int on = (ctl & b->ctl_en) && !(sctl & b->sctl_pause);
+ 
++            trace_es1370_voice_active(i, on);
+             if (i == ADC_CHANNEL) {
+                 AUD_set_active_in (s->adc_voice, on);
+             } else {
+@@ -458,24 +465,32 @@
+     return addr;
+ }
+ 
+-static void es1370_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
++static void es1370_write_register(ES1370State *s, uint32_t addr, uint32_t val)
+ {
+-    ES1370State *s = opaque;
+     struct chan *d = &s->chan[0];
+ 
+-    addr = es1370_fixup (s, addr);
+-
+     switch (addr) {
+     case ES1370_REG_CONTROL:
++        trace_es1370_control_wr(val);
+         es1370_update_voices (s, val, s->sctl);
+         print_ctl (val);
+         break;
+ 
++    case ES1370_REG_CODEC: {
++        /* No AK4531 mixer in this model: observed here, then dropped. */
++        uint32_t codec_index = (val & CODEC_INDEX_MASK) >> CODEC_SH_INDEX;
++        uint32_t codec_data = val & CODEC_DATA_MASK;
++
++        trace_es1370_codec_wr(codec_index, codec_data, val);
++        break;
++    }
++
+     case ES1370_REG_MEMPAGE:
+         s->mempage = val & 0xf;
+         break;
+ 
+     case ES1370_REG_SERIAL_CONTROL:
++        trace_es1370_serial_control_wr(val);
+         es1370_maybe_lower_irq (s, val);
+         es1370_update_voices (s, s->ctl, val);
+         print_sctl (val);
+@@ -522,34 +537,36 @@
+         break;
+ 
+     default:
+-        lwarn("writel 0x%" PRIx64 " <- 0x%" PRIx64 "\n", addr, val);
++        trace_es1370_unhandled_wr(addr, val);
++        lwarn("writel 0x%x <- 0x%x\n", addr, val);
+         break;
+     }
+ }
+ 
+-static uint64_t es1370_read(void *opaque, hwaddr addr, unsigned size)
++static uint32_t es1370_read_register(ES1370State *s, uint32_t addr)
+ {
+-    ES1370State *s = opaque;
+     uint32_t val;
+     struct chan *d = &s->chan[0];
+ 
+-    addr = es1370_fixup (s, addr);
+-
+     switch (addr) {
+     case ES1370_REG_CONTROL:
+         val = s->ctl;
++        trace_es1370_control_rd(val);
+         break;
+     case ES1370_REG_STATUS:
+         val = s->status;
++        trace_es1370_status_rd(val);
+         break;
+     case ES1370_REG_MEMPAGE:
+         val = s->mempage;
+         break;
+     case ES1370_REG_CODEC:
+         val = s->codec;
++        trace_es1370_codec_rd(val);
+         break;
+     case ES1370_REG_SERIAL_CONTROL:
+         val = s->sctl;
++        trace_es1370_serial_control_rd(val);
+         break;
+ 
+     case ES1370_REG_DAC1_SCOUNT:
+@@ -595,12 +612,64 @@
+ 
+     default:
+         val = ~0U;
+-        lwarn("readl 0x%" PRIx64 " -> 0x%x\n", addr, val);
++        trace_es1370_unhandled_rd(addr);
++        lwarn("readl 0x%x -> 0x%x\n", addr, val);
+         break;
+     }
+     return val;
+ }
+ 
++/*
++ * The guest programs this chip byte- and word-wise, so accesses narrower than a
++ * register have to be merged here: the memory core does not align them down, it
++ * hands the device the unaligned address as is. Without this the switch above
++ * misses every such access -- writes vanish and reads return all ones.
++ */
++static void es1370_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
++{
++    const unsigned int bits_per_byte = 8;
++    ES1370State *s = opaque;
++    uint32_t register_addr = es1370_fixup(s, addr);
++    unsigned int byte_offset = register_addr & 3;
++    uint32_t merged_value;
++
++    register_addr &= ~3U;
++
++    if (byte_offset == 0 && size == 4) {
++        merged_value = val;
++    } else {
++        unsigned int shift = byte_offset * bits_per_byte;
++        uint64_t size_mask = (1ULL << (size * bits_per_byte)) - 1;
++        uint32_t merge_mask = size_mask << shift;
++        uint32_t current_value = es1370_read_register(s, register_addr);
++
++        merged_value = (current_value & ~merge_mask) | ((val << shift) & merge_mask);
++        trace_es1370_subword_wr(register_addr, byte_offset, size, val, merged_value);
++    }
++
++    es1370_write_register(s, register_addr, merged_value);
++}
++
++static uint64_t es1370_read(void *opaque, hwaddr addr, unsigned size)
++{
++    const unsigned int bits_per_byte = 8;
++    ES1370State *s = opaque;
++    uint32_t register_addr = es1370_fixup(s, addr);
++    unsigned int byte_offset = register_addr & 3;
++    uint32_t register_value;
++
++    register_addr &= ~3U;
++    register_value = es1370_read_register(s, register_addr);
++
++    if (byte_offset) {
++        uint32_t shifted_value = register_value >> (byte_offset * bits_per_byte);
++
++        trace_es1370_subword_rd(register_addr, byte_offset, size, register_value, shifted_value);
++        return shifted_value;
++    }
++    return register_value;
++}
++
+ static void es1370_transfer_audio (ES1370State *s, struct chan *d, int loop_sel,
+                                    int max, bool *irq)
+ {
+@@ -755,7 +824,7 @@
+         .max_access_size = 4,
+     },
+     .impl = {
+-        .min_access_size = 4,
++        .min_access_size = 1,
+         .max_access_size = 4,
+     },
+     .endianness = DEVICE_LITTLE_ENDIAN,
