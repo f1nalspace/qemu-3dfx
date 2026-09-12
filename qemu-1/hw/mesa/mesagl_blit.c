@@ -121,6 +121,30 @@ static void blit_fit_guest_into_drawable(const int *v, struct blit_fit *fit)
     fit->offset_x = (drawable_width - fit->width) / 2;
     fit->offset_y = (drawable_height - fit->height) / 2;
 }
+
+/* Put one of the guest's boxes into the fitted image. A viewport or scissor is a corner and a size, a blit's destination is two corners, so there the second pair moves with the offset too. */
+static void blit_fit_box(const int *v, const int blit_adj, void *args, uint32_t *box)
+{
+    struct blit_fit fit;
+    const float rounding = 0.5f;
+
+    blit_fit_guest_into_drawable(v, &fit);
+    const int second_offset_x = blit_adj? fit.offset_x:0;
+    const int second_offset_y = blit_adj? fit.offset_y:0;
+    box[0] = box[0] * fit.scale_x + fit.offset_x + rounding;
+    box[1] = box[1] * fit.scale_y + fit.offset_y + rounding;
+    box[2] = box[2] * fit.scale_x + second_offset_x + rounding;
+    box[3] = box[3] * fit.scale_y + second_offset_y + rounding;
+
+    const int shrinking = (fit.scale_x < 1.f) || (fit.scale_y < 1.f);
+    if (blit_adj && shrinking) {
+        /* Shrinking with GL_NEAREST shimmers. Linear only for colour: a blit that carries depth or stencil must not filter. */
+        const int blit_mask_index = 8, blit_filter_index = 9;
+        uint32_t *blit_args = args;
+        if (blit_args[blit_mask_index] == GL_COLOR_BUFFER_BIT)
+            blit_args[blit_filter_index] = GL_LINEAR;
+    }
+}
 static unsigned blit_program_setup(void)
 {
     MESA_PFN(PFNGLATTACHSHADERPROC,       glAttachShader);
@@ -793,8 +817,8 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
                 box[2] = v[0];
                 box[3] = v[1] & 0x7FFFU;
             }
-            else if ((blit.render_scaled == RENDER_SCALED_SHRUNK) && blit.guest_viewport_seen && !framebuffer_binding) {
-                /* The guest asks for the viewport it set, not for what the shrinking made of it. */
+            else if (blit.render_scaled && blit.guest_viewport_seen && !framebuffer_binding) {
+                /* The guest asks for the viewport it set, not for what the render scaler made of it. */
                 for (int i = 0; i < 4; i++)
                     box[i] = blit.guest_viewport[i];
             }
@@ -809,19 +833,8 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
             && (v[3] > (v[1] & 0x7FFFU))
             && (fullscreen || !blit.has_swap) && !windowed_guest
             && !RenderScalerOff()) {
-        int aspect = (v[1] & (1 << 15))? 0:1,
-            offs_x = v[2] - ((v[0] * 1.f * v[3]) / (v[1] & 0x7FFFU));
-        offs_x >>= 1;
-        for (int i = 0; i < 4; i++)
-            box[i] *= (1.f * v[3]) / (v[1] & 0x7FFFU);
-        if (aspect) {
-            box[0] += offs_x;
-            box[2] += (blit_adj)? box[0]:0;
-        }
-        else {
-            box[0] *= (1.f * v[2]) / box[2];
-            box[2] = v[2];
-        }
+        /* Taller than the guest image does not mean wider: a narrow window scales by its width, and the picture sits centred between bars above and below. */
+        blit_fit_box(v, blit_adj, args, box);
         blit.adj = blit_adj;
         blit.render_scaled = RENDER_SCALED_ENLARGED;
         acted = 1;
@@ -832,24 +845,7 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
          * So the guest's viewport and scissor shrink before it draws.
          * Its blits only when it presents without SwapBuffers -- Drakan does, with glBlitFramebuffer and glFlush. A guest that swaps still has the whole picture in its FBO, and MesaBlitScale() scales that down.
          */
-        struct blit_fit fit;
-        const float rounding = 0.5f;
-
-        blit_fit_guest_into_drawable(v, &fit);
-        /* A blit's destination is two corners, so its second pair moves with the offset too; a viewport or scissor is a corner and a size. */
-        const int second_offset_x = blit_adj? fit.offset_x:0;
-        const int second_offset_y = blit_adj? fit.offset_y:0;
-        box[0] = box[0] * fit.scale_x + fit.offset_x + rounding;
-        box[1] = box[1] * fit.scale_y + fit.offset_y + rounding;
-        box[2] = box[2] * fit.scale_x + second_offset_x + rounding;
-        box[3] = box[3] * fit.scale_y + second_offset_y + rounding;
-        if (blit_adj) {
-            /* Shrinking with GL_NEAREST shimmers. Linear only for colour: a blit that carries depth or stencil must not filter. */
-            const int blit_mask_index = 8, blit_filter_index = 9;
-            uint32_t *blit_args = args;
-            if (blit_args[blit_mask_index] == GL_COLOR_BUFFER_BIT)
-                blit_args[blit_filter_index] = GL_LINEAR;
-        }
+        blit_fit_box(v, blit_adj, args, box);
         blit.render_scaled = RENDER_SCALED_SHRUNK;
         acted = 1;
     }
