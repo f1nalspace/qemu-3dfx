@@ -393,7 +393,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +    if (grab_diagnostics_enabled()) {
 +        struct sdl2_console *scon = &sdl2_console[0];
 +        int sdl_holds = (scon && scon->real_window)? SDL_GetWindowGrab(scon->real_window):-1;
-+        fprintf(stderr, "qemu-3dfx grab: %-30s grab=%d sdl=%d rel=%d fullscreen=%d absolute=%d gemerkt=%d%s\n",
++        fprintf(stderr, "qemu-3dfx grab: %-30s grab=%d sdl=%d rel=%d fullscreen=%d absolute=%d remembered=%d%s\n",
 +                what, gui_grab, sdl_holds, SDL_GetRelativeMouseMode(),
 +                gui_fullscreen, absolute_enabled, fxui_grab_val(0), grab_caller);
 +        grab_caller[0] = '\0';
@@ -479,13 +479,13 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +    sdl_holds = SDL_GetWindowGrab(scon->real_window);
 +    if (gui_grab && !sdl_holds) {
 +        if (grab_diagnostics_enabled()) {
-+            fprintf(stderr, "qemu-3dfx grab: %-30s SDL hatte den Griff nicht -- nachgezogen\n", what);
++            fprintf(stderr, "qemu-3dfx grab: %-30s SDL did not hold the grab -- re-asserted\n", what);
 +        }
 +        SDL_SetWindowGrab(scon->real_window, SDL_TRUE);
 +    }
 +    else if (!gui_grab && sdl_holds) {
 +        if (grab_diagnostics_enabled()) {
-+            fprintf(stderr, "qemu-3dfx grab: %-30s SDL hielt den Griff noch -- abgegeben\n", what);
++            fprintf(stderr, "qemu-3dfx grab: %-30s SDL still held the grab -- released\n", what);
 +        }
 +        SDL_SetWindowGrab(scon->real_window, SDL_FALSE);
 +    }
@@ -497,7 +497,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +    relative_is_on = SDL_GetRelativeMouseMode();
 +    if (!gui_grab && relative_is_on) {
 +        if (grab_diagnostics_enabled()) {
-+            fprintf(stderr, "qemu-3dfx grab: %-30s relativer Modus lief ohne Griff -- aus\n", what);
++            fprintf(stderr, "qemu-3dfx grab: %-30s relative mode ran without a grab -- off\n", what);
 +        }
 +        SDL_SetRelativeMouseMode(SDL_FALSE);
 +    }
@@ -546,7 +546,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +    grab_note_caller(function_name, line_number);
 +
      if (!con || !qemu_console_is_graphic(con)) {
-+        grab_diag("grab_start: kein Grafikkonsolen-Fenster");
++        grab_diag("grab_start: no graphic console window");
          return;
      }
      /*
@@ -554,7 +554,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
       * application (SDL bug).
       */
      if (!(SDL_GetWindowFlags(scon->real_window) & SDL_WINDOW_INPUT_FOCUS)) {
-+        grab_diag("grab_start: ABGELEHNT, kein Fokus");
++        grab_diag("grab_start: REFUSED, no focus");
          return;
      }
      if (guest_cursor) {
@@ -699,7 +699,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +         */
 +        if ((ev->type == SDL_MOUSEBUTTONUP) && (bev->button == SDL_BUTTON_LEFT)
 +                && gui_grab && grab_escaped && !qemu_input_is_absolute(scon->dcl.con)) {
-+            grab_reassert(scon, "mausklick: Griff erneuert");
++            grab_reassert(scon, "mouse click: grab re-asserted");
 +        }
          if (ev->type == SDL_MOUSEBUTTONDOWN) {
              buttonstate |= SDL_BUTTON(bev->button);
@@ -733,7 +733,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +    }
 +    else {
 +        /* The grab survived the focus change on paper only -- put it into force again. */
-+        grab_reassert(scon, "focus_gained: Griff erneuert");
++        grab_reassert(scon, "focus_gained: grab re-asserted");
 +    }
 +}
 +
@@ -785,7 +785,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +            fxui_grab_val(0x80 | gui_grab);
              sdl_grab_end(scon);
 +        } else {
-+            grab_diag("FOCUS_LOST: Griff behalten");
++            grab_diag("FOCUS_LOST: grab kept");
          }
          break;
      case SDL_WINDOWEVENT_RESTORED:
@@ -798,14 +798,14 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +         * Whatever SDL reports, that settles it: the grab is not in force.
 +         */
 +        grab_escaped = gui_grab;
-+        grab_reassert(scon, "leave: Griff erneuert");
++        grab_reassert(scon, "leave: grab re-asserted");
 +        break;
      case SDL_WINDOWEVENT_SHOWN:
          scon->hidden = false;
 +        /* A window that was hidden and shown again keeps the grab on paper and loses it in
 +         * fact -- this is the sequence UT produces when it starts a session.
 +         */
-+        grab_reassert(scon, "shown: Griff erneuert");
++        grab_reassert(scon, "shown: grab re-asserted");
          break;
      case SDL_WINDOWEVENT_HIDDEN:
          scon->hidden = true;

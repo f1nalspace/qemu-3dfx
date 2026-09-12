@@ -312,10 +312,10 @@ enum {
 static const char *blit_path_name(const int path)
 {
     switch (path) {
-        case BLIT_PATH_ADJUSTED:     return "uebersprungen";
-        case BLIT_PATH_COPY_TEXTURE: return "textur";
+        case BLIT_PATH_ADJUSTED:     return "skipped";
+        case BLIT_PATH_COPY_TEXTURE: return "texture";
         case BLIT_PATH_FRAMEBUFFER:  return "blit";
-        default:                     return "aus";
+        default:                     return "off";
     }
 }
 
@@ -384,9 +384,9 @@ static void blit_diag(const int path, const int fullscreen, const int *v,
     pixel_guest_fbo = probe_guest_framebuffer;
 
     snprintf(line, sizeof(line),
-        "qemu-3dfx blit: %-13s vollbild=%d gast=%dx%d flaeche=%dx%d fenster=%dx%d kontext=%d scaleroff=%d "
-        "sichtfeld=%d,%d %dx%d lesen=%d(0x%04x) zeichnen=%d(0x%04x) proben=%d "
-        "punkt0=%06x punktfbo=%06x fehler=0x%04x",
+        "qemu-3dfx blit: %-8s fullscreen=%d guest=%dx%d surface=%dx%d window=%dx%d context=%d scaleroff=%d "
+        "viewport=%d,%d %dx%d read=%d(0x%04x) draw=%d(0x%04x) samples=%d "
+        "pixel0=%06x pixelfbo=%06x error=0x%04x",
         blit_path_name(path), fullscreen, v[0], v[1] & 0x7FFFU, v[2], v[3],
         blit.guest_client_width, blit.guest_client_height,
         drawable_context, RenderScalerOff(),
@@ -581,7 +581,7 @@ static const char *scaler_what(const uint32_t FEnum)
         case FEnum_glBlitFramebufferEXT: return "glBlitFramebufferEXT";
         case FEnum_glScissor:            return "glScissor";
         case FEnum_glViewport:           return "glViewport";
-        default:                         return "andere";
+        default:                         return "other";
     }
 }
 /* Why the render scaler did or did not touch a box. It only ever fires from the FIFO, so a
@@ -599,8 +599,8 @@ static void scaler_diag(const char *what, const int *v, const int drawable_conte
     if (!blit_diagnostics_enabled())
         return;
     snprintf(line, sizeof(line),
-        "qemu-3dfx scaler: %-16s gast=%dx%d flaeche=%dx%d kontext=%d fbo=%d vollbild=%d "
-        "fenstergast=%d hatswap=%d scaleroff=%d gewirkt=%d box=%d,%d %dx%d",
+        "qemu-3dfx scaler: %-16s guest=%dx%d surface=%dx%d context=%d fbo=%d fullscreen=%d "
+        "windowguest=%d hasswap=%d scaleroff=%d applied=%d box=%d,%d %dx%d",
         what, v[0], v[1] & 0x7FFFU, v[2], v[3], drawable_context, framebuffer_binding,
         fullscreen, windowed_guest, blit.has_swap, RenderScalerOff(), acted,
         box[0], box[1], box[2], box[3]);
@@ -635,7 +635,7 @@ void MesaDrawableRecheck(void)
         blit_reapply_guest_boxes();
     for (int i = 0; i < 4; i++)
         box[i] = blit.guest_viewport[i];
-    scaler_diag("flaeche neu", v, drawable_context, 0, fullscreen, 0, blit.render_scaled, box);
+    scaler_diag("new surface", v, drawable_context, 0, fullscreen, 0, blit.render_scaled, box);
 }
 
 void MesaRenderScaler(const uint32_t FEnum, void *args)
