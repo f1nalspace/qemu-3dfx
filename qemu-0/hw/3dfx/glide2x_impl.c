@@ -778,13 +778,14 @@ void __stdcall (*setConfig)(const uint32_t flags, void *magic);
 void __stdcall (*setConfigRes)(const int res, void *swap12);
 void __stdcall (*setConfigOffset)(const int offset_x, const int offset_y);
 void __stdcall (*setConfigWindow)(const int width, const int height, const int offset_x);
+void __stdcall (*setConfigWindowOffset)(const int width, const int height, const int offset_x, const int offset_y);
 static int SDLSignValid(const uint32_t sign)
 {
     static uint32_t SDLSign;
     SDLSign = (sign)? sign:SDLSign;
     return (SDLSign == 0x324c4453/*'SDL2'*/);
 }
-void conf_glide2x(const uint32_t flags, const int res, const int offset_x)
+void conf_glide2x(const uint32_t flags, const int res, const int offset_x, const int offset_y)
 {
     uint32_t sign = 0x58326724 /*'$g2X'*/;
     if (setConfig)
@@ -793,16 +794,19 @@ void conf_glide2x(const uint32_t flags, const int res, const int offset_x)
         setConfigRes(res, 0);
     /* An OpenGLide without it leaves the image at the GL origin, which is the bottom left. */
     if (setConfigOffset)
-        setConfigOffset(offset_x, 0);
+        setConfigOffset(offset_x, offset_y);
     if (sign)
         SDLSignValid(sign);
 }
 /* The drawable changes size under a running game when the host switches to full screen.
  * OpenGLide sets its viewport in grSstWinOpen and never again, so it has to be told.
  */
-void conf_glide2x_window(const int width, const int height, const int offset_x)
+void conf_glide2x_window(const int width, const int height, const int offset_x, const int offset_y)
 {
-    if (setConfigWindow)
+    /* An OpenGLide that only knows the horizontal offset keeps the image at the bottom edge. */
+    if (setConfigWindowOffset)
+        setConfigWindowOffset(width, height, offset_x, offset_y);
+    else if (setConfigWindow)
         setConfigWindow(width, height, offset_x);
 }
 
@@ -879,6 +883,7 @@ int init_glide2x(const char *dllname)
     setConfigRes = (void (*)(const int, void *))GetProcAddress(hDll, "_setConfigRes@8");
     setConfigOffset = (void (*)(const int, const int))GetProcAddress(hDll, "_setConfigOffset@8");
     setConfigWindow = (void (*)(const int, const int, const int))GetProcAddress(hDll, "_setConfigWindow@12");
+    setConfigWindowOffset = (void (*)(const int, const int, const int, const int))GetProcAddress(hDll, "_setConfigWindowOffset@16");
 #endif
 #if defined(CONFIG_LINUX) || defined(CONFIG_DARWIN)
     const char *soname[] = {
@@ -909,6 +914,7 @@ int init_glide2x(const char *dllname)
     setConfigRes = (void (*)(const int, void *))dlsym(hDll, "setConfigRes");
     setConfigOffset = (void (*)(const int, const int))dlsym(hDll, "setConfigOffset");
     setConfigWindow = (void (*)(const int, const int, const int))dlsym(hDll, "setConfigWindow");
+    setConfigWindowOffset = (void (*)(const int, const int, const int, const int))dlsym(hDll, "setConfigWindowOffset");
 #endif
     
     if (!hDll) {

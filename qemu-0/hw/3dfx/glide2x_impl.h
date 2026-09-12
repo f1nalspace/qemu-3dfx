@@ -131,8 +131,8 @@ const char *getGRFuncStr(int);
 void glide_renderer_stat(const int);
 #endif //CONSOLE_H
 void doGlideFunc(int, uint32_t *, uintptr_t *, uintptr_t *, int);
-void conf_glide2x(const uint32_t, const int, const int);
-void conf_glide2x_window(const int, const int, const int);
+void conf_glide2x(const uint32_t, const int, const int, const int);
+void conf_glide2x_window(const int, const int, const int, const int);
 void glide_window_rescale(void);
 void cwnd_glide2x(void *, void *, void *);
 int init_glide2x(const char *);

@@ -272,7 +272,8 @@ void glide_window_rescale(void)
         target_height = (glide_height * drawable_width) / glide_width;
     }
     const int offset_x = (drawable_width - target_width) / 2;
-    conf_glide2x_window(target_width, target_height, offset_x);
+    const int offset_y = (drawable_height - target_height) / 2;
+    conf_glide2x_window(target_width, target_height, offset_x, offset_y);
 }
 
 void init_window(const int res, const char *wndTitle, void *opaque)
@@ -363,13 +364,15 @@ void init_window(const int res, const char *wndTitle, void *opaque)
     int sel = res;
     if (cfg_scaleX)
         sel = scaledRes(cfg_scaleX, ((float)tblRes[res].h) / tblRes[res].w);
-    /* Centre the image in a drawable that is wider than the scaled game resolution.
+    /* Centre the image in a drawable that is wider or taller than the scaled game resolution.
      * OpenGLide puts its viewport at the GL origin otherwise.
      */
     const int centre_offset_x = (glide_fullscreen && (drawable_width > tblRes[sel].w))?
         ((drawable_width - tblRes[sel].w) / 2):0;
+    const int centre_offset_y = (glide_fullscreen && (drawable_height > tblRes[sel].h))?
+        ((drawable_height - tblRes[sel].h) / 2):0;
     const int glide_res_width = (cfg_scaleX)? tblRes[sel].w:0;
-    conf_glide2x(flags, glide_res_width, centre_offset_x);
+    conf_glide2x(flags, glide_res_width, centre_offset_x, centre_offset_y);
 
     current_glide_res = res;
     scaled_to_fullscreen = glide_fullscreen;
