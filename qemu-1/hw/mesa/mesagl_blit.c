@@ -89,6 +89,38 @@ static int blit_use_guest_client_size(int *v)
     v[1] = (v[1] & 0x8000U) | (client_height & 0x7FFFU);
     return 1;
 }
+
+/* blit.render_scaled: 0 while the guest's boxes are its own, otherwise which way the render scaler resized them. */
+enum {
+    RENDER_SCALED_ENLARGED = 1,
+    RENDER_SCALED_SHRUNK = 2,
+};
+
+/* How the guest image fits into the drawable: one scale for both axes when the aspect is kept, centred.
+ * The render scaler and the blit both take it from here, so the resized boxes and the bars meet on the same pixel.
+ */
+struct blit_fit {
+    float scale_x, scale_y;
+    int width, height, offset_x, offset_y;
+};
+
+static void blit_fit_guest_into_drawable(const int *v, struct blit_fit *fit)
+{
+    const int guest_width = v[0], guest_height = v[1] & 0x7FFFU;
+    const int drawable_width = v[2], drawable_height = v[3];
+    const int keep_aspect = (v[1] & (1 << 15))? 0:1;
+    const float scale_to_width = (1.f * drawable_width) / guest_width;
+    const float scale_to_height = (1.f * drawable_height) / guest_height;
+    const float kept_scale = (scale_to_width < scale_to_height)? scale_to_width:scale_to_height;
+    const float rounding = 0.5f;
+
+    fit->scale_x = keep_aspect? kept_scale:scale_to_width;
+    fit->scale_y = keep_aspect? kept_scale:scale_to_height;
+    fit->width = guest_width * fit->scale_x + rounding;
+    fit->height = guest_height * fit->scale_y + rounding;
+    fit->offset_x = (drawable_width - fit->width) / 2;
+    fit->offset_y = (drawable_height - fit->height) / 2;
+}
 static unsigned blit_program_setup(void)
 {
     MESA_PFN(PFNGLATTACHSHADERPROC,       glAttachShader);
@@ -312,6 +344,7 @@ enum {
     BLIT_PATH_ADJUSTED,
     BLIT_PATH_COPY_TEXTURE,
     BLIT_PATH_FRAMEBUFFER,
+    BLIT_PATH_BARS,
 };
 
 static const char *blit_path_name(const int path)
@@ -320,6 +353,7 @@ static const char *blit_path_name(const int path)
         case BLIT_PATH_ADJUSTED:     return "skipped";
         case BLIT_PATH_COPY_TEXTURE: return "texture";
         case BLIT_PATH_FRAMEBUFFER:  return "blit";
+        case BLIT_PATH_BARS:         return "bars";
         default:                     return "off";
     }
 }
@@ -530,6 +564,8 @@ void MesaBlitScale(void)
     }
     blit.flip = ScalerBlitFlip();
     drawable_context = DrawableContext();
+    /* A window resized by hand changes the drawable without any guest call noticing. */
+    MesaDrawableRecheck();
 
     if (fullscreen != blit.last_fullscreen) {
         blit.last_fullscreen = fullscreen;
@@ -559,30 +595,34 @@ void MesaBlitScale(void)
 
     const int guest_width = v[0], guest_height = v[1] & 0x7FFFU;
     const int drawable_width = v[2], drawable_height = v[3];
-    const int keep_aspect = (v[1] & (1 << 15))? 0:1;
     const int size_differs = (drawable_width != guest_width) || (drawable_height != guest_height);
+    const int drawable_smaller = (drawable_width < guest_width) || (drawable_height < guest_height);
+    int read_binding_at_swap = 0;
 
-    /* Two ways up, and only one of them may run: the render scaler enlarges the guest's own
-     * boxes before it draws, this one enlarges the finished frame. Which one carries depends
-     * on the title -- a guest whose boxes the scaler never got to see is left to this one.
+    if (drawable_smaller)
+        PFN_CALL(glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_binding_at_swap));
+
+    /* Two ways to fit the image, and only one of them may run: the render scaler resizes the guest's own boxes before it draws, this one resizes the finished frame.
+     * Which one carries depends on the title -- a guest whose boxes the scaler never got to see is left to this one.
+     * The render scaler enlarges in full screen, and shrinks wherever the drawable is smaller than the guest image and the guest draws straight into it.
+     * A guest that presents from an FBO still has the whole picture there, so shrinking that stays here. When the render scaler shrank, the bars are still painted here.
      */
-    const int render_scaler_carries = fullscreen && !windowed_guest && !RenderScalerOff() && blit.render_scaled;
+    const int render_scaler_enlarges = fullscreen && (blit.render_scaled == RENDER_SCALED_ENLARGED);
+    const int render_scaler_shrinks = drawable_smaller && (blit.render_scaled == RENDER_SCALED_SHRUNK) && !read_binding_at_swap;
+    const int render_scaler_carries = (render_scaler_enlarges || render_scaler_shrinks) && !windowed_guest && !RenderScalerOff();
+    const int scale_the_frame = !render_scaler_carries;
+    struct blit_fit fit = { 0 };
+
+    if (guest_width && guest_height)
+        blit_fit_guest_into_drawable(v, &fit);
+    const int bars_around_shrunk_boxes = render_scaler_carries && render_scaler_shrinks && (fit.offset_x || fit.offset_y);
 
     if (drawable_context && guest_width && guest_height && size_differs
-            && !render_scaler_carries) {
+            && (scale_the_frame || bars_around_shrunk_boxes)) {
         unsigned last_prog = blit_program_setup();
         int unit0_texture_binding = 0;
-        int target_width = drawable_width, target_height = drawable_height;
-
-        if (keep_aspect) {
-            const float scale_to_width = (1.f * drawable_width) / guest_width;
-            const float scale_to_height = (1.f * drawable_height) / guest_height;
-            const float scale = (scale_to_width < scale_to_height)? scale_to_width:scale_to_height;
-            target_width = guest_width * scale;
-            target_height = guest_height * scale;
-        }
-        const int target_x = (drawable_width - target_width) / 2;
-        const int target_y = (drawable_height - target_height) / 2;
+        const int target_width = fit.width, target_height = fit.height;
+        const int target_x = fit.offset_x, target_y = fit.offset_y;
         /* One quad, drawn black into each letterbox bar and textured into the centred target rectangle. */
         const float coord[] = {
             -1,-1,  1,-1,  -1,1,  1,1,
@@ -605,7 +645,7 @@ void MesaBlitScale(void)
              * framebuffer, and the letterbox quad below paints over the whole of it --
              * copying afterwards would hand the shader a black texture.
              */
-            if (!save_map.read_binding) {
+            if (scale_the_frame && !save_map.read_binding) {
                 const int srgb_correction = ScalerSRGBCorr();
                 const int screen_format = (FRAMEBUFFER_SRGB_(save_map) && srgb_correction)? GL_SRGB:GL_RGBA;
                 const int core_profile = save_map.boolean_map & GL_CONTEXT_CORE_PROFILE_BIT;
@@ -617,7 +657,10 @@ void MesaBlitScale(void)
                 PFN_CALL(glUniform1i(blit.black, GL_TRUE));
                 blit_draw_letterbox_bars(drawable_width, drawable_height, target_x, target_y, target_width, target_height);
             }
-            if (save_map.read_binding) {
+            if (!scale_the_frame) {
+                path = BLIT_PATH_BARS;
+            }
+            else if (save_map.read_binding) {
                 /* Colour alone, and GL_LINEAR: a scaling blit that carries depth or
                  * stencil is an error, and an errored blit leaves the screen black.
                  * The guest's FBO is bottom-up against the window, hence the flipped
@@ -718,6 +761,8 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
     MESA_PFN(PFNGLGETINTEGERVPROC, glGetIntegerv);
     int v[4], fullscreen = mesa_gui_fullscreen(v), framebuffer_binding, blit_adj = 0;
     const int windowed_guest = blit_use_guest_client_size(v);
+    const int guest_size_known = v[0] && (v[1] & 0x7FFFU);
+    const int drawable_smaller = guest_size_known && ((v[2] < v[0]) || (v[3] < (v[1] & 0x7FFFU)));
     uint32_t *box;
 
     PFN_CALL(glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer_binding));
@@ -748,6 +793,11 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
                 box[2] = v[0];
                 box[3] = v[1] & 0x7FFFU;
             }
+            else if ((blit.render_scaled == RENDER_SCALED_SHRUNK) && blit.guest_viewport_seen && !framebuffer_binding) {
+                /* The guest asks for the viewport it set, not for what the shrinking made of it. */
+                for (int i = 0; i < 4; i++)
+                    box[i] = blit.guest_viewport[i];
+            }
             /* fall through */
         default:
             return;
@@ -773,7 +823,23 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
             box[2] = v[2];
         }
         blit.adj = blit_adj;
-        blit.render_scaled = 1;
+        blit.render_scaled = RENDER_SCALED_ENLARGED;
+        acted = 1;
+    }
+    else if (drawable_context && !framebuffer_binding && drawable_smaller && !blit_adj
+            && !windowed_guest && !RenderScalerOff()) {
+        /* A drawable smaller than the guest image cannot be repaired after the frame: whatever lies beyond the window edge was never drawn into any buffer.
+         * So the guest's viewport and scissor shrink before it draws. Not its blits: a guest that presents from an FBO still has the whole picture there, and MesaBlitScale() scales that down.
+         */
+        struct blit_fit fit;
+        const float rounding = 0.5f;
+
+        blit_fit_guest_into_drawable(v, &fit);
+        box[0] = box[0] * fit.scale_x + fit.offset_x + rounding;
+        box[1] = box[1] * fit.scale_y + fit.offset_y + rounding;
+        box[2] = box[2] * fit.scale_x + rounding;
+        box[3] = box[3] * fit.scale_y + rounding;
+        blit.render_scaled = RENDER_SCALED_SHRUNK;
         acted = 1;
     }
     scaler_diag(scaler_what(FEnum), v, drawable_context, framebuffer_binding, fullscreen,
