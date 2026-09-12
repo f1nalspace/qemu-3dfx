@@ -233,7 +233,7 @@ static void report_hardware(const GrHwConfiguration *hw)
             const GrVoodooConfig_t *cfg = &hw->SSTs[board].sstBoard.VoodooConfig;
             printf("    Frame buffer %d MB, Pixelfx rev %d, %d Texelfx, SLI %s\n",
                    cfg->fbRam, cfg->fbiRev, cfg->nTexelfx,
-                   cfg->sliDetect ? "ja" : "nein");
+                   cfg->sliDetect ? "yes" : "no");
             if (cfg->nTexelfx > 0) {
                 printf("    TMU0: Rev %d, %d MB\n",
                        cfg->tmuConfig[0].tmuRev, cfg->tmuConfig[0].tmuRam);
