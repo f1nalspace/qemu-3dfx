@@ -87,7 +87,7 @@ static void report_share_file_with_keytest(void)
 static const char *device_kind(const GUID *device_guid)
 {
     if (IsEqualGUID(device_guid, &IID_IDirect3DTnLHalDevice)) {
-        return "HAL mit Hardware-T&L";
+        return "HAL with hardware T&L";
     }
     if (IsEqualGUID(device_guid, &IID_IDirect3DHALDevice)) {
         return "HAL";
@@ -96,12 +96,12 @@ static const char *device_kind(const GUID *device_guid)
         return "Software (RGB)";
     }
     if (IsEqualGUID(device_guid, &IID_IDirect3DRefDevice)) {
-        return "Software (Referenz)";
+        return "Software (reference)";
     }
     if (IsEqualGUID(device_guid, &IID_IDirect3DMMXDevice)) {
         return "Software (MMX)";
     }
-    return "unbekannt";
+    return "unknown";
 }
 
 static int hal_device_found = 0;
@@ -120,15 +120,15 @@ static HRESULT WINAPI enum_device_callback(LPSTR description, LPSTR name,
         hal_device_found = 1;
     }
 
-    report("  Geraet: %s\n", (name != NULL) ? name : "(ohne Namen)");
-    report("    Beschreibung : %s\n", (description != NULL) ? description : "(keine)");
-    report("    Art          : %s\n", device_kind(device_guid));
-    report("    Texturgroesse: %lu x %lu\n",
+    report("  Device: %s\n", (name != NULL) ? name : "(unnamed)");
+    report("    Description  : %s\n", (description != NULL) ? description : "(none)");
+    report("    Kind         : %s\n", device_kind(device_guid));
+    report("    Texture size : %lu x %lu\n",
            (unsigned long)device_description->dwMaxTextureWidth,
            (unsigned long)device_description->dwMaxTextureHeight);
-    report("    Texturstufen : %u\n", (unsigned)device_description->wMaxSimultaneousTextures);
+    report("    Tex stages   : %u\n", (unsigned)device_description->wMaxSimultaneousTextures);
     report("    DevCaps      : 0x%08lx\n", (unsigned long)device_description->dwDevCaps);
-    report("    Dreieck-Caps : 0x%08lx\n",
+    report("    Triangle caps: 0x%08lx\n",
            (unsigned long)device_description->dpcTriCaps.dwTextureCaps);
     report("\n");
 
@@ -140,10 +140,10 @@ static BOOL WINAPI enum_driver_callback(GUID *driver_guid, LPSTR description,
 {
     (void)context;
 
-    report("  Treiber: %s -- %s%s\n",
-           (name != NULL) ? name : "(ohne Namen)",
-           (description != NULL) ? description : "(keine Beschreibung)",
-           (driver_guid == NULL) ? "   [Hauptbildschirm]" : "");
+    report("  Driver: %s -- %s%s\n",
+           (name != NULL) ? name : "(unnamed)",
+           (description != NULL) ? description : "(no description)",
+           (driver_guid == NULL) ? "   [primary display]" : "");
 
     return DDENUMRET_OK;
 }
@@ -179,21 +179,21 @@ static void report_adapter(IDirectDraw7 *directdraw)
     result = IDirectDraw7_GetDeviceIdentifier(directdraw, &identifier, 0);
     if (result == DD_OK) {
         report("  Adapter      : %s\n", identifier.szDescription);
-        report("  Treiberdatei : %s\n", identifier.szDriver);
-        report("  Hersteller   : 0x%04lx  Geraet: 0x%04lx\n",
+        report("  Driver file  : %s\n", identifier.szDriver);
+        report("  Vendor       : 0x%04lx  Device: 0x%04lx\n",
                (unsigned long)identifier.dwVendorId,
                (unsigned long)identifier.dwDeviceId);
     } else {
-        report("  GetDeviceIdentifier gescheitert: 0x%08lx\n", (unsigned long)result);
+        report("  GetDeviceIdentifier failed: 0x%08lx\n", (unsigned long)result);
     }
 
     memset(&driver_caps, 0, sizeof(driver_caps));
     driver_caps.dwSize = sizeof(driver_caps);
     result = IDirectDraw7_GetCaps(directdraw, &driver_caps, NULL);
     if (result == DD_OK) {
-        report("  Bildspeicher : %lu MB gesamt\n",
+        report("  Video memory : %lu MB total\n",
                (unsigned long)(driver_caps.dwVidMemTotal >> 20));
-        report("  DDraw-Caps   : 0x%08lx  (0x%08lx = BLT in Hardware)\n",
+        report("  DDraw caps   : 0x%08lx  (0x%08lx = BLT in hardware)\n",
                (unsigned long)driver_caps.dwCaps, (unsigned long)DDCAPS_BLT);
     }
 }
@@ -358,20 +358,20 @@ int main(int argc, char **argv)
     report_file = fopen(REPORT_FILE_NAME, "w");
     report_share_file_with_keytest();
 
-    report("ddcube -- DirectDraw und Direct3D 7 ueber qemu-3dfx\n");
+    report("ddcube -- DirectDraw and Direct3D 7 through qemu-3dfx\n");
     report("---------------------------------------------------\n\n");
 
-    report("DirectDraw-Treiber:\n");
+    report("DirectDraw drivers:\n");
     DirectDrawEnumerateA(enum_driver_callback, NULL);
     report("\n");
 
     result = DirectDrawCreateEx(NULL, (LPVOID *)&directdraw, &IID_IDirectDraw7, NULL);
     if (result != DD_OK) {
-        report("FEHLER: DirectDrawCreateEx gescheitert: 0x%08lx\n", (unsigned long)result);
+        report("ERROR: DirectDrawCreateEx failed: 0x%08lx\n", (unsigned long)result);
         return 1;
     }
 
-    report("Hauptbildschirm:\n");
+    report("Primary display:\n");
     report_adapter(directdraw);
     report("\n");
 
@@ -379,19 +379,19 @@ int main(int argc, char **argv)
 
     result = IDirectDraw7_SetCooperativeLevel(directdraw, window, DDSCL_NORMAL);
     if (result != DD_OK) {
-        report("FEHLER: SetCooperativeLevel(NORMAL) gescheitert: 0x%08lx\n",
+        report("ERROR: SetCooperativeLevel(NORMAL) failed: 0x%08lx\n",
                (unsigned long)result);
     }
 
-    report("Bildschirmmodi (16 und 32 Bit, gekuerzt):\n");
+    report("Display modes (16 and 32 bit, shortened):\n");
     IDirectDraw7_EnumDisplayModes(directdraw, 0, NULL, &mode_count, enum_mode_callback);
-    report("  ... insgesamt %d Modi in 16 oder 32 Bit\n\n", mode_count);
+    report("  ... %d modes in 16 or 32 bit in total\n\n", mode_count);
 
-    report("Direct3D-Geraete:\n");
+    report("Direct3D devices:\n");
     result = IDirectDraw7_QueryInterface(directdraw, &IID_IDirect3D7, (LPVOID *)&direct3d);
     if (result != DD_OK) {
-        report("FEHLER: kein IDirect3D7 -- 0x%08lx\n", (unsigned long)result);
-        report("\nUrteil: **kein Direct3D**. Genau das melden Spiele als\n");
+        report("ERROR: no IDirect3D7 -- 0x%08lx\n", (unsigned long)result);
+        report("\nVerdict: **no Direct3D**. That is exactly what games report as\n");
         report("        \"no 3D accelerator installed\".\n");
         IDirectDraw7_Release(directdraw);
         if (report_file != NULL) fclose(report_file);
@@ -399,8 +399,8 @@ int main(int argc, char **argv)
     }
     IDirect3D7_EnumDevices(direct3d, enum_device_callback, NULL);
 
-    report("Urteil: %s\n\n", hal_device_found ?
-           "**ein HAL ist vorhanden**" : "**kein HAL** -- nur Software-Geraete");
+    report("Verdict: %s\n\n", hal_device_found ?
+           "**a HAL is present**" : "**no HAL** -- software devices only");
 
     if (info_only || !hal_device_found) {
         if (direct3d != NULL)   IDirect3D7_Release(direct3d);
@@ -414,7 +414,7 @@ int main(int argc, char **argv)
     result = IDirectDraw7_SetCooperativeLevel(directdraw, window,
                  DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN | DDSCL_ALLOWREBOOT);
     if (result != DD_OK) {
-        report("FEHLER: SetCooperativeLevel(EXCLUSIVE) gescheitert: 0x%08lx\n",
+        report("ERROR: SetCooperativeLevel(EXCLUSIVE) failed: 0x%08lx\n",
                (unsigned long)result);
         return 1;
     }
@@ -422,7 +422,7 @@ int main(int argc, char **argv)
     result = IDirectDraw7_SetDisplayMode(directdraw, SCREEN_WIDTH, SCREEN_HEIGHT,
                                          SCREEN_DEPTH, 0, 0);
     if (result != DD_OK) {
-        report("FEHLER: SetDisplayMode %dx%dx%d gescheitert: 0x%08lx\n",
+        report("ERROR: SetDisplayMode %dx%dx%d failed: 0x%08lx\n",
                SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_DEPTH, (unsigned long)result);
         return 1;
     }
@@ -435,7 +435,7 @@ int main(int argc, char **argv)
     surface_description.dwBackBufferCount = 1;
     result = IDirectDraw7_CreateSurface(directdraw, &surface_description, &primary, NULL);
     if (result != DD_OK) {
-        report("FEHLER: primaere Oberflaeche gescheitert: 0x%08lx\n", (unsigned long)result);
+        report("ERROR: primary surface failed: 0x%08lx\n", (unsigned long)result);
         return 1;
     }
 
@@ -443,7 +443,7 @@ int main(int argc, char **argv)
     surface_caps.dwCaps = DDSCAPS_BACKBUFFER;
     result = IDirectDrawSurface7_GetAttachedSurface(primary, &surface_caps, &back_buffer);
     if (result != DD_OK) {
-        report("FEHLER: kein Hintergrundpuffer: 0x%08lx\n", (unsigned long)result);
+        report("ERROR: no back buffer: 0x%08lx\n", (unsigned long)result);
         return 1;
     }
 
@@ -461,13 +461,13 @@ int main(int argc, char **argv)
     if (result == DD_OK) {
         IDirectDrawSurface7_AddAttachedSurface(back_buffer, depth_buffer);
     } else {
-        report("Hinweis: kein Z-Puffer (0x%08lx), es wird ohne gezeichnet\n",
+        report("Note: no Z buffer (0x%08lx), drawing without one\n",
                (unsigned long)result);
     }
 
     result = IDirect3D7_CreateDevice(direct3d, &IID_IDirect3DHALDevice, back_buffer, &device);
     if (result != DD_OK) {
-        report("FEHLER: CreateDevice(HAL) gescheitert: 0x%08lx\n", (unsigned long)result);
+        report("ERROR: CreateDevice(HAL) failed: 0x%08lx\n", (unsigned long)result);
         return 1;
     }
 
@@ -572,14 +572,14 @@ int main(int argc, char **argv)
         IDirectDraw7_SetCooperativeLevel(directdraw, window, DDSCL_NORMAL);
         IDirectDraw7_RestoreDisplayMode(directdraw);
 
-        report("%ld Bilder in %.1f Sekunden, %.1f FPS\n",
+        report("%ld frames in %.1f seconds, %.1f FPS\n",
                frames, total_seconds,
                (total_seconds > 0.0) ? (frames / total_seconds) : 0.0);
     }
 
-    report("Transparenz ueber Direct3D 7: %s\n",
-           transparency_logo.usable ? (transparency_passed ? "in Ordnung" : "FEHLERHAFT")
-                                    : "nicht geprueft");
+    report("Transparency through Direct3D 7: %s\n",
+           transparency_logo.usable ? (transparency_passed ? "fine" : "BROKEN")
+                                    : "not tested");
 
     keylogo_d3d7_release(&transparency_logo);
     if (device != NULL)       IDirect3DDevice7_Release(device);

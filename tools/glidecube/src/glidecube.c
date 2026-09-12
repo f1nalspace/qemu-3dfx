@@ -77,12 +77,12 @@ static int stop_requested(void)
 
 static void print_usage(const char *program_name)
 {
-    printf("Aufruf: %s [-seconds N] [-width N] [-info] [-vsync]\n", program_name);
-    printf("  -seconds N  Laufzeit in Sekunden, Vorgabe 15. 0 heisst endlos.\n");
-    printf("  -width N    320, 512, 640 oder 800. Vorgabe 640.\n");
-    printf("  -info       nur die Geraetedaten ausgeben, nichts zeichnen.\n");
-    printf("  -vsync      auf den Strahlruecklauf warten.\n");
-    printf("  Esc beendet einen laufenden Durchgang.\n");
+    printf("Usage: %s [-seconds N] [-width N] [-info] [-vsync]\n", program_name);
+    printf("  -seconds N  run time in seconds, default 15. 0 means endless.\n");
+    printf("  -width N    320, 512, 640 or 800. Default 640.\n");
+    printf("  -info       print the device data only, draw nothing.\n");
+    printf("  -vsync      wait for the vertical retrace.\n");
+    printf("  Esc ends a running pass.\n");
     fflush(stdout);
 }
 
@@ -217,7 +217,7 @@ static const char * sst_type_name(GrSstType type)
     case GR_SSTTYPE_SST96:   return "SST96";
     case GR_SSTTYPE_AT3D:    return "AT3D";
     case GR_SSTTYPE_Voodoo2: return "Voodoo2";
-    default:                 return "unbekannt";
+    default:                 return "unknown";
     }
 }
 
@@ -225,13 +225,13 @@ static void report_hardware(const GrHwConfiguration *hw)
 {
     int board;
 
-    printf("grSstQueryHardware: %d Karte(n)\n", hw->num_sst);
+    printf("grSstQueryHardware: %d card(s)\n", hw->num_sst);
     for (board = 0; board < hw->num_sst && board < MAX_NUM_SST; board++) {
         GrSstType type = hw->SSTs[board].type;
-        printf("  Karte %d: %s\n", board, sst_type_name(type));
+        printf("  Card %d: %s\n", board, sst_type_name(type));
         if (type == GR_SSTTYPE_VOODOO || type == GR_SSTTYPE_Voodoo2) {
             const GrVoodooConfig_t *cfg = &hw->SSTs[board].sstBoard.VoodooConfig;
-            printf("    Bildspeicher %d MB, Pixelfx-Rev %d, %d Texelfx, SLI %s\n",
+            printf("    Frame buffer %d MB, Pixelfx rev %d, %d Texelfx, SLI %s\n",
                    cfg->fbRam, cfg->fbiRev, cfg->nTexelfx,
                    cfg->sliDetect ? "ja" : "nein");
             if (cfg->nTexelfx > 0) {
@@ -286,7 +286,7 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[argument], "-width") == 0 && argument + 1 < argc) {
             requested_width = atoi(argv[++argument]);
         } else if (argv[argument][0] == '-') {
-            printf("Unbekannte Option: %s\n", argv[argument]);
+            printf("Unknown option: %s\n", argv[argument]);
             print_usage(argv[0]);
             return 2;
         } else if (positional_arguments++ == 0) {
@@ -296,14 +296,14 @@ int main(int argc, char **argv)
         }
     }
 
-    printf("glidecube -- Glide-Prueffall fuer qemu-3dfx\n");
+    printf("glidecube -- Glide test case for qemu-3dfx\n");
     fflush(stdout);
 
     grGlideInit();
 
     memset(&hw, 0, sizeof(hw));
     if (!grSstQueryHardware(&hw)) {
-        printf("FEHLER: grSstQueryHardware meldet keine Hardware.\n");
+        printf("ERROR: grSstQueryHardware reports no hardware.\n");
         grGlideShutdown();
         return 1;
     }
@@ -319,11 +319,11 @@ int main(int argc, char **argv)
     resolution = resolution_from_width(requested_width);
     if (!grSstWinOpen(0, resolution, GR_REFRESH_60Hz,
                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1)) {
-        printf("FEHLER: grSstWinOpen gescheitert.\n");
+        printf("ERROR: grSstWinOpen failed.\n");
         grGlideShutdown();
         return 1;
     }
-    printf("Fenster offen: %d x %d\n", (int)screen_width, (int)screen_height);
+    printf("Window open: %d x %d\n", (int)screen_width, (int)screen_height);
     fflush(stdout);
 
     grRenderBuffer(GR_BUFFER_BACKBUFFER);
@@ -365,9 +365,9 @@ int main(int argc, char **argv)
         keylogo_glide_draw(&transparency_logo, (frames_total & 1) ? 1 : 0, 0x20, 0x20, 0x20);
 
         if (frames_total == 2)
-            transparency_alpha_passed = keylogo_glide_verify(&transparency_logo, "Alphamischung");
+            transparency_alpha_passed = keylogo_glide_verify(&transparency_logo, "alpha blending");
         else if (frames_total == 3)
-            transparency_chroma_passed = keylogo_glide_verify(&transparency_logo, "Chroma-Key");
+            transparency_chroma_passed = keylogo_glide_verify(&transparency_logo, "chroma key");
 
         grBufferSwap(swap_interval);
 
@@ -398,18 +398,18 @@ int main(int argc, char **argv)
 
     now = seconds_now();
     if (stopped_by_key)
-        printf("Mit Esc abgebrochen.\n");
-    printf("gesamt: %ld frames in %.1f seconds, %.1f FPS\n",
+        printf("Cancelled with Esc.\n");
+    printf("total: %ld frames in %.1f seconds, %.1f FPS\n",
            frames_total, now - start_time,
            frames_total / (now - start_time));
     fflush(stdout);
 
-    printf("Transparenz ueber Glide, Alphamischung: %s\n",
-           transparency_logo.usable ? (transparency_alpha_passed ? "in Ordnung" : "FEHLERHAFT")
-                                    : "nicht geprueft");
-    printf("Transparenz ueber Glide, Chroma-Key    : %s\n",
-           transparency_logo.usable ? (transparency_chroma_passed ? "in Ordnung" : "FEHLERHAFT")
-                                    : "nicht geprueft");
+    printf("Transparency through Glide, alpha blending: %s\n",
+           transparency_logo.usable ? (transparency_alpha_passed ? "fine" : "BROKEN")
+                                    : "not tested");
+    printf("Transparency through Glide, chroma key    : %s\n",
+           transparency_logo.usable ? (transparency_chroma_passed ? "fine" : "BROKEN")
+                                    : "not tested");
     fflush(stdout);
 
     keylogo_glide_release(&transparency_logo);

@@ -163,7 +163,7 @@ static int play_one_case(LPDIRECTSOUND direct_sound, const struct test_case *tes
     DWORD previous_play_cursor = 0xffffffff;
     DWORD started_at;
 
-    report("%5u Hz  %2u Bit  %s  Ton %4u Hz  ",
+    report("%5u Hz  %2u bit  %s  tone %4u Hz  ",
            test->samples_per_second, test->bits_per_sample,
            test->channel_count == 1 ? "mono  " : "stereo",
            test->tone_hertz);
@@ -180,7 +180,7 @@ static int play_one_case(LPDIRECTSOUND direct_sound, const struct test_case *tes
 
     result = IDirectSound_CreateSoundBuffer(direct_sound, &buffer_description, &ring_buffer, NULL);
     if (result != DS_OK) {
-        report("-> CreateSoundBuffer fehlgeschlagen (0x%08lx)\n", (unsigned long)result);
+        report("-> CreateSoundBuffer failed (0x%08lx)\n", (unsigned long)result);
         return 0;
     }
 
@@ -192,7 +192,7 @@ static int play_one_case(LPDIRECTSOUND direct_sound, const struct test_case *tes
     IDirectSoundBuffer_SetCurrentPosition(ring_buffer, 0);
     result = IDirectSoundBuffer_Play(ring_buffer, 0, 0, DSBPLAY_LOOPING);
     if (result != DS_OK) {
-        report("-> Play fehlgeschlagen (0x%08lx)\n", (unsigned long)result);
+        report("-> Play failed (0x%08lx)\n", (unsigned long)result);
         IDirectSoundBuffer_Release(ring_buffer);
         return 0;
     }
@@ -234,7 +234,7 @@ static int play_one_case(LPDIRECTSOUND direct_sound, const struct test_case *tes
     IDirectSoundBuffer_Stop(ring_buffer);
     IDirectSoundBuffer_Release(ring_buffer);
 
-    report("-> gespielt, %u Abfragen, davon %u ohne Fortschritt (%u %%)\n",
+    report("-> played, %u queries, %u of them without progress (%u %%)\n",
            poll_count, stalled_polls,
            poll_count ? (stalled_polls * 100 / poll_count) : 0);
     Sleep((DWORD)(SILENCE_SECONDS * 1000));
@@ -254,23 +254,23 @@ int main(void)
     unsigned int played_count = 0;
 
     report_file = fopen(REPORT_FILE_NAME, "w");
-    report("sinetest_ds -- dieselben Toene wie sinetest, aber ueber DirectSound\n");
+    report("sinetest_ds -- the same tones as sinetest, but through DirectSound\n");
     report("-------------------------------------------------------------------\n");
 
     dsound_module = LoadLibrary("dsound.dll");
     if (dsound_module == NULL) {
-        report("dsound.dll laesst sich nicht laden.\n");
+        report("dsound.dll cannot be loaded.\n");
         return 1;
     }
     create_function = (DirectSoundCreateFunction)GetProcAddress(dsound_module, "DirectSoundCreate");
     if (create_function == NULL) {
-        report("DirectSoundCreate nicht gefunden.\n");
+        report("DirectSoundCreate not found.\n");
         return 1;
     }
 
     result = create_function(NULL, &direct_sound, NULL);
     if (result != DS_OK) {
-        report("DirectSoundCreate fehlgeschlagen (0x%08lx)\n", (unsigned long)result);
+        report("DirectSoundCreate failed (0x%08lx)\n", (unsigned long)result);
         return 1;
     }
 
@@ -281,7 +281,7 @@ int main(void)
      */
     result = IDirectSound_SetCooperativeLevel(direct_sound, GetDesktopWindow(), DSSCL_PRIORITY);
     report("SetCooperativeLevel(PRIORITY): %s (0x%08lx)\n",
-           result == DS_OK ? "ok" : "fehlgeschlagen", (unsigned long)result);
+           result == DS_OK ? "ok" : "failed", (unsigned long)result);
 
     memset(&primary_description, 0, sizeof(primary_description));
     primary_description.dwSize = sizeof(primary_description);
@@ -290,10 +290,10 @@ int main(void)
     if (result == DS_OK) {
         fill_wave_format(&primary_format, &test_cases[3]);   /* 22050, 16 Bit, stereo */
         result = IDirectSoundBuffer_SetFormat(primary_buffer, &primary_format);
-        report("Primaerpuffer auf 22050/16/stereo setzen: %s (0x%08lx)\n",
-               result == DS_OK ? "ok" : "fehlgeschlagen", (unsigned long)result);
+        report("Setting the primary buffer to 22050/16/stereo: %s (0x%08lx)\n",
+               result == DS_OK ? "ok" : "failed", (unsigned long)result);
     } else {
-        report("Primaerpuffer nicht zu bekommen (0x%08lx)\n", (unsigned long)result);
+        report("Cannot get the primary buffer (0x%08lx)\n", (unsigned long)result);
     }
     report("\n");
 
@@ -301,8 +301,8 @@ int main(void)
         played_count += play_one_case(direct_sound, &test_cases[case_index]);
     }
 
-    report("\n%u von %u Prueffaellen gespielt.\n", played_count, (unsigned int)TEST_CASE_COUNT);
-    report("Bericht: %s\n", REPORT_FILE_NAME);
+    report("\n%u of %u test cases played.\n", played_count, (unsigned int)TEST_CASE_COUNT);
+    report("Report: %s\n", REPORT_FILE_NAME);
 
     if (primary_buffer != NULL) {
         IDirectSoundBuffer_Release(primary_buffer);

@@ -77,16 +77,16 @@ static void report(const char *format, ...)
 static const char *wave_error_text(MMRESULT result)
 {
     switch (result) {
-    case MMSYSERR_NOERROR:      return "kein Fehler";
-    case MMSYSERR_ALLOCATED:    return "Geraet bereits belegt";
-    case MMSYSERR_BADDEVICEID:  return "ungueltige Geraetenummer";
-    case MMSYSERR_NODRIVER:     return "kein Treiber";
-    case MMSYSERR_NOMEM:        return "kein Speicher";
-    case MMSYSERR_INVALHANDLE:  return "ungueltige Kennung";
-    case WAVERR_BADFORMAT:      return "Format nicht unterstuetzt";
-    case WAVERR_STILLPLAYING:   return "spielt noch";
-    case WAVERR_UNPREPARED:     return "Puffer nicht vorbereitet";
-    default:                    return "unbekannt";
+    case MMSYSERR_NOERROR:      return "no error";
+    case MMSYSERR_ALLOCATED:    return "device already in use";
+    case MMSYSERR_BADDEVICEID:  return "invalid device number";
+    case MMSYSERR_NODRIVER:     return "no driver";
+    case MMSYSERR_NOMEM:        return "out of memory";
+    case MMSYSERR_INVALHANDLE:  return "invalid handle";
+    case WAVERR_BADFORMAT:      return "format not supported";
+    case WAVERR_STILLPLAYING:   return "still playing";
+    case WAVERR_UNPREPARED:     return "buffer not prepared";
+    default:                    return "unknown";
     }
 }
 
@@ -95,17 +95,17 @@ static void list_devices(void)
     UINT device_count = waveOutGetNumDevs();
     UINT device_index;
 
-    report("Wiedergabegeraete: %u\n", device_count);
+    report("Playback devices: %u\n", device_count);
 
     for (device_index = 0; device_index < device_count; ++device_index) {
         WAVEOUTCAPS capabilities;
         MMRESULT result = waveOutGetDevCaps(device_index, &capabilities, sizeof(capabilities));
 
         if (result != MMSYSERR_NOERROR) {
-            report("  [%u] Abfrage fehlgeschlagen: %s\n", device_index, wave_error_text(result));
+            report("  [%u] query failed: %s\n", device_index, wave_error_text(result));
             continue;
         }
-        report("  [%u] %s  Kanaele=%u  Formate=0x%08lx\n",
+        report("  [%u] %s  channels=%u  formats=0x%08lx\n",
                device_index, capabilities.szPname,
                (unsigned int)capabilities.wChannels,
                (unsigned long)capabilities.dwFormats);
@@ -168,14 +168,14 @@ static int play_one_case(const struct test_case *test, unsigned char *buffer, un
     unsigned long tone_bytes;
     unsigned int waited_milliseconds = 0;
 
-    report("%5u Hz  %2u Bit  %s  Ton %4u Hz  ",
+    report("%5u Hz  %2u bit  %s  tone %4u Hz  ",
            test->samples_per_second, test->bits_per_sample,
            test->channel_count == 1 ? "mono  " : "stereo",
            test->tone_hertz);
 
     tone_bytes = build_tone(buffer, buffer_bytes, test);
     if (tone_bytes == 0) {
-        report("-> Puffer zu klein\n");
+        report("-> buffer too small\n");
         return 0;
     }
 
@@ -218,7 +218,7 @@ static int play_one_case(const struct test_case *test, unsigned char *buffer, un
         Sleep(WAIT_POLL_MILLISECONDS);
         waited_milliseconds += WAIT_POLL_MILLISECONDS;
         if (waited_milliseconds > WAIT_LIMIT_SECONDS * 1000) {
-            report("-> Zeitueberschreitung nach %u s\n", WAIT_LIMIT_SECONDS);
+            report("-> timed out after %u s\n", WAIT_LIMIT_SECONDS);
             waveOutReset(wave_device);
             waveOutUnprepareHeader(wave_device, &wave_header, sizeof(wave_header));
             waveOutClose(wave_device);
@@ -229,7 +229,7 @@ static int play_one_case(const struct test_case *test, unsigned char *buffer, un
     waveOutUnprepareHeader(wave_device, &wave_header, sizeof(wave_header));
     waveOutClose(wave_device);
 
-    report("-> gespielt, %lu Byte in %u ms\n", tone_bytes, waited_milliseconds);
+    report("-> played, %lu bytes in %u ms\n", tone_bytes, waited_milliseconds);
     return 1;
 }
 
@@ -244,7 +244,7 @@ int main(int argc, char **argv)
 
     report_file = fopen(REPORT_FILE_NAME, "w");
 
-    report("sinetest -- Klangpruefung fuer qemu-3dfx\n");
+    report("sinetest -- sound check for qemu-3dfx\n");
     report("----------------------------------------\n");
     list_devices();
     report("\n");
@@ -258,7 +258,7 @@ int main(int argc, char **argv)
 
     buffer = (unsigned char *)malloc(buffer_bytes);
     if (buffer == NULL) {
-        report("Kein Speicher fuer den Tonpuffer (%lu Byte).\n", buffer_bytes);
+        report("Out of memory for the tone buffer (%lu bytes).\n", buffer_bytes);
         if (report_file != NULL) {
             fclose(report_file);
         }
@@ -269,8 +269,8 @@ int main(int argc, char **argv)
         played_count += play_one_case(&test_cases[case_index], buffer, buffer_bytes);
     }
 
-    report("\n%u von %u Prueffaellen gespielt.\n", played_count, (unsigned int)TEST_CASE_COUNT);
-    report("Bericht: %s\n", REPORT_FILE_NAME);
+    report("\n%u of %u test cases played.\n", played_count, (unsigned int)TEST_CASE_COUNT);
+    report("Report: %s\n", REPORT_FILE_NAME);
 
     free(buffer);
     if (report_file != NULL) {

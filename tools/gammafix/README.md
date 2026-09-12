@@ -1,51 +1,51 @@
-# gammafix — die Gamma-Rampe des Hosts retten
+# gammafix — rescuing the host's gamma ramp
 
-## Wozu
+## What for
 
-qemu-3dfx hakt sich im Gast in `GDI32.SetDeviceGammaRamp` ein
-(`wrappers/mesa/src/wrapgl32.c`, `HookPatchGamma`) und leitet den Aufruf über die
-Gerätegrenze auf den Host um. Dort landet er in
-`hw/mesa/mglcntx_linux.c`, `wglSetDeviceGammaRamp3DFX`, und wird zu:
+In the guest, qemu-3dfx hooks `GDI32.SetDeviceGammaRamp`
+(`wrappers/mesa/src/wrapgl32.c`, `HookPatchGamma`) and redirects the call across the
+device boundary to the host. There it lands in
+`hw/mesa/mglcntx_linux.c`, `wglSetDeviceGammaRamp3DFX`, and becomes:
 
     XF86VidModeSetGammaRamp(dpy, DefaultScreen(dpy), rampsz, r, g, b);
 
-Das ist **der ganze X-Bildschirm**, nicht das QEMU-Fenster. Setzt ein Gastspiel
-seine Helligkeit, setzt es damit die Helligkeit des kompletten Host-Desktops, auf
-allen daran hängenden Bildschirmen.
+That is **the whole X screen**, not the QEMU window. When a guest game sets its
+brightness, it sets the brightness of the entire host desktop with it, on every screen
+attached to it.
 
-Zurückgesetzt wird die Rampe nur in `MGLWndRelease()`. Stürzt das Gastprogramm ab
-oder wird QEMU hart beendet, bleibt der Host in der Rampe des Spiels stehen. Ist
-die dunkel, ist der Desktop unlesbar — er **funktioniert** weiter (Fenster
-wechseln, tippen, scrollen), man sieht ihn nur nicht mehr.
+The ramp is only reset in `MGLWndRelease()`. If the guest program crashes or QEMU is
+killed, the host stays in the game's ramp. If that one is dark, the desktop is unreadable
+— it keeps **working** (switching windows, typing, scrolling), you just cannot see it any
+more.
 
-Das ist kein Grund für einen Neustart. Es ist eine Zeile.
+That is no reason for a reboot. It is one line.
 
-## Bauen
+## Building
 
     make -C tools/gammafix
 
-Braucht nur `libX11` und `libXxf86vm`, beide sind mit Xorg ohnehin da.
+Needs only `libX11` and `libXxf86vm`, both of which come with Xorg anyway.
 
-## Benutzen
+## Using it
 
-Anzeigen, was gerade gesetzt ist:
+Show what is currently set:
 
     tools/gammafix/build/gammafix
 
-Zurücksetzen:
+Reset:
 
     tools/gammafix/build/gammafix --reset
 
-Die geschriebene Rampe ist Bit für Bit dieselbe, die `MesaInitGammaRamp()` in
-qemu-3dfx schreibt — also genau das, was ein sauberes `MGLWndRelease()` getan hätte.
+The ramp it writes is bit for bit the one `MesaInitGammaRamp()` writes in qemu-3dfx — so
+exactly what a clean `MGLWndRelease()` would have done.
 
-## Im Notfall
+## In an emergency
 
-Ist der Bildschirm schon dunkel, geht es blind über eine zweite Konsole:
+If the screen is dark already, it works blind over a second console:
 
-    Strg+Alt+F3
+    Ctrl+Alt+F3
     cd ~/_projects/qemu-3dfx-build
     DISPLAY=:0 tools/gammafix/build/gammafix --reset
-    Strg+Alt+F1
+    Ctrl+Alt+F1
 
-`DISPLAY=:0` ist nötig, weil die Konsole kein X-Display kennt.
+`DISPLAY=:0` is needed because the console knows no X display.
