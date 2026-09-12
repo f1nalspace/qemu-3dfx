@@ -58,6 +58,9 @@ static struct {
      */
     int guest_client_width, guest_client_height, guest_client_changed, was_windowed_guest;
     int last_drawable_width, last_drawable_height;
+    /* The copy of the guest image on the texture path, kept from frame to frame. */
+    unsigned screen_texture;
+    int screen_texture_width, screen_texture_height, screen_texture_format, screen_texture_core_profile;
 } blit;
 
 void MesaSetGuestDrawable(const int client_width, const int client_height)
@@ -177,6 +180,9 @@ void MesaBlitFree(void)
     MESA_PFN(PFNGLDELETEPROGRAMPROC,      glDeleteProgram);
     MESA_PFN(PFNGLDELETESHADERPROC,       glDeleteShader);
     MESA_PFN(PFNGLDELETEVERTEXARRAYSPROC, glDeleteVertexArrays);
+    MESA_PFN(PFNGLDELETETEXTURESPROC,     glDeleteTextures);
+    if (blit.screen_texture)
+        PFN_CALL(glDeleteTextures(1, &blit.screen_texture));
     if (blit.prog) {
         PFN_CALL(glDeleteProgram(blit.prog));
         PFN_CALL(glDeleteShader(blit.vert));
@@ -190,7 +196,7 @@ void MesaBlitFree(void)
 }
 struct save_states {
     int view[4];
-    int draw_binding, read_binding, texture, texture_binding,
+    int draw_binding, read_binding, texture,
         vao_binding, vbo_binding, boolean_map;
 };
 #define FRAMEBUFFER_SRGB_(s) \
@@ -226,7 +232,6 @@ static int blit_program_buffer(void *save_map, const int size, const void *data)
         { GL_FRAMEBUFFER_BINDING, &last->draw_binding },
         { GL_READ_FRAMEBUFFER_BINDING, &last->read_binding },
         { GL_ACTIVE_TEXTURE, &last->texture },
-        { GL_TEXTURE_BINDING_2D, &last->texture_binding },
         { GL_VERTEX_ARRAY_BINDING, &last->vao_binding },
         { GL_ARRAY_BUFFER_BINDING, &last->vbo_binding },
         { GL_CONTEXT_PROFILE_MASK, &last->boolean_map },
@@ -423,18 +428,91 @@ static void blit_reapply_guest_boxes(void)
     }
 }
 
+/* A compatibility context may bind texture names it never got from glGenTextures, and Quake counts up its own.
+ * A texture kept across frames under a generated name could be hit that way, and the next copy would land in the guest's texture.
+ * This name lies far above anything a 32-bit Windows guest counts up to, and in kernel address space, so it is no guest pointer either.
+ */
+static const unsigned screen_texture_name_for_compatibility_contexts = 0xFFFF3DF0U;
+
+/* Copy the guest image into a texture that lives as long as the blit program, instead of creating, filling and deleting one every frame.
+ * Its storage is only allocated again when size or format change, or when the texture no longer holds what was put there.
+ * A core context gets a generated name: there the guest cannot bind an ungenerated one either.
+ */
+static void blit_copy_guest_image(const int core_profile, const int width, const int height, const int format)
+{
+    MESA_PFN(PFNGLBINDTEXTUREPROC,            glBindTexture);
+    MESA_PFN(PFNGLCOPYTEXIMAGE2DPROC,         glCopyTexImage2D);
+    MESA_PFN(PFNGLCOPYTEXSUBIMAGE2DPROC,      glCopyTexSubImage2D);
+    MESA_PFN(PFNGLGENTEXTURESPROC,            glGenTextures);
+    MESA_PFN(PFNGLGETTEXLEVELPARAMETERIVPROC, glGetTexLevelParameteriv);
+    MESA_PFN(PFNGLTEXPARAMETERIPROC,          glTexParameteri);
+
+    int stored_width = 0, stored_height = 0;
+
+    if (blit.screen_texture && (blit.screen_texture_core_profile != core_profile))
+        blit.screen_texture = 0;
+    if (!blit.screen_texture) {
+        if (core_profile)
+            PFN_CALL(glGenTextures(1, &blit.screen_texture));
+        else
+            blit.screen_texture = screen_texture_name_for_compatibility_contexts;
+        blit.screen_texture_core_profile = core_profile;
+        blit.screen_texture_width = 0;
+        blit.screen_texture_height = 0;
+    }
+    PFN_CALL(glBindTexture(GL_TEXTURE_2D, blit.screen_texture));
+    PFN_CALL(glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &stored_width));
+    PFN_CALL(glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &stored_height));
+
+    const int storage_is_ours = (stored_width == blit.screen_texture_width) && (stored_height == blit.screen_texture_height);
+    const int storage_fits = (width == blit.screen_texture_width) && (height == blit.screen_texture_height) && (format == blit.screen_texture_format);
+
+    if (storage_is_ours && storage_fits) {
+        PFN_CALL(glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0,0, 0,0, width,height));
+        return;
+    }
+    PFN_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
+    PFN_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
+    PFN_CALL(glCopyTexImage2D(GL_TEXTURE_2D, 0, format, 0,0, width,height, 0));
+    blit.screen_texture_width = width;
+    blit.screen_texture_height = height;
+    blit.screen_texture_format = format;
+}
+
+/* Paint the bars only. Painting the whole drawable black first filled every pixel of the image area twice. */
+static void blit_draw_letterbox_bars(const int drawable_width, const int drawable_height, const int target_x, const int target_y, const int target_width, const int target_height)
+{
+    MESA_PFN(PFNGLDRAWARRAYSPROC, glDrawArrays);
+    MESA_PFN(PFNGLVIEWPORTPROC,   glViewport);
+
+    const int right_bar_x = target_x + target_width;
+    const int right_bar_width = drawable_width - right_bar_x;
+    const int top_bar_y = target_y + target_height;
+    const int top_bar_height = drawable_height - top_bar_y;
+
+    if (target_x) {
+        PFN_CALL(glViewport(0,0,  target_x, drawable_height));
+        PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 0, 4));
+        PFN_CALL(glViewport(right_bar_x,0,  right_bar_width, drawable_height));
+        PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 0, 4));
+    }
+    if (target_y) {
+        PFN_CALL(glViewport(0,0,  drawable_width, target_y));
+        PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 0, 4));
+        PFN_CALL(glViewport(0,top_bar_y,  drawable_width, top_bar_height));
+        PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 0, 4));
+    }
+}
+
 void MesaBlitScale(void)
 {
     MESA_PFN(PFNGLACTIVETEXTUREPROC,            glActiveTexture);
     MESA_PFN(PFNGLBINDTEXTUREPROC,              glBindTexture);
     MESA_PFN(PFNGLBLITFRAMEBUFFERPROC,          glBlitFramebuffer);
-    MESA_PFN(PFNGLCOPYTEXIMAGE2DPROC,           glCopyTexImage2D);
-    MESA_PFN(PFNGLDELETETEXTURESPROC,           glDeleteTextures);
     MESA_PFN(PFNGLDISABLEVERTEXATTRIBARRAYPROC, glDisableVertexAttribArray);
     MESA_PFN(PFNGLDRAWARRAYSPROC,               glDrawArrays);
     MESA_PFN(PFNGLENABLEVERTEXATTRIBARRAYPROC,  glEnableVertexAttribArray);
-    MESA_PFN(PFNGLGENTEXTURESPROC,              glGenTextures);
-    MESA_PFN(PFNGLTEXPARAMETERIPROC,            glTexParameteri);
+    MESA_PFN(PFNGLGETINTEGERVPROC,              glGetIntegerv);
     MESA_PFN(PFNGLUNIFORM1IPROC,                glUniform1i);
     MESA_PFN(PFNGLUSEPROGRAMPROC,               glUseProgram);
     MESA_PFN(PFNGLVERTEXATTRIBPOINTERPROC,      glVertexAttribPointer);
@@ -492,7 +570,8 @@ void MesaBlitScale(void)
 
     if (drawable_context && guest_width && guest_height && size_differs
             && !render_scaler_carries) {
-        unsigned screen_texture, last_prog = blit_program_setup();
+        unsigned last_prog = blit_program_setup();
+        int unit0_texture_binding = 0;
         int target_width = drawable_width, target_height = drawable_height;
 
         if (keep_aspect) {
@@ -504,9 +583,7 @@ void MesaBlitScale(void)
         }
         const int target_x = (drawable_width - target_width) / 2;
         const int target_y = (drawable_height - target_height) / 2;
-        /* One quad, drawn twice: once black over the whole drawable for the letterbox
-         * bars, once textured into the centred target rectangle.
-         */
+        /* One quad, drawn black into each letterbox bar and textured into the centred target rectangle. */
         const float coord[] = {
             -1,-1,  1,-1,  -1,1,  1,1,
         };
@@ -529,18 +606,16 @@ void MesaBlitScale(void)
              * copying afterwards would hand the shader a black texture.
              */
             if (!save_map.read_binding) {
+                const int srgb_correction = ScalerSRGBCorr();
+                const int screen_format = (FRAMEBUFFER_SRGB_(save_map) && srgb_correction)? GL_SRGB:GL_RGBA;
+                const int core_profile = save_map.boolean_map & GL_CONTEXT_CORE_PROFILE_BIT;
                 PFN_CALL(glActiveTexture(GL_TEXTURE0));
-                PFN_CALL(glGenTextures(1, &screen_texture));
-                PFN_CALL(glBindTexture(GL_TEXTURE_2D, screen_texture));
-                PFN_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
-                PFN_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
-                PFN_CALL(glCopyTexImage2D(GL_TEXTURE_2D, 0, (FRAMEBUFFER_SRGB_(save_map) && ScalerSRGBCorr())?
-                            GL_SRGB:GL_RGBA, 0,0, guest_width,guest_height, 0));
+                PFN_CALL(glGetIntegerv(GL_TEXTURE_BINDING_2D, &unit0_texture_binding));
+                blit_copy_guest_image(core_profile, guest_width, guest_height, screen_format);
             }
             if (target_x || target_y) {
                 PFN_CALL(glUniform1i(blit.black, GL_TRUE));
-                PFN_CALL(glViewport(0,0,  drawable_width, drawable_height));
-                PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)); /* letterbox */
+                blit_draw_letterbox_bars(drawable_width, drawable_height, target_x, target_y, target_width, target_height);
             }
             if (save_map.read_binding) {
                 /* Colour alone, and GL_LINEAR: a scaling blit that carries depth or
@@ -558,9 +633,9 @@ void MesaBlitScale(void)
                 PFN_CALL(glUniform1i(blit.black, GL_FALSE));
                 PFN_CALL(glViewport(target_x,target_y,  target_width,target_height));
                 PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)); /* scale */
-                PFN_CALL(glDeleteTextures(1, &screen_texture));
+                /* Unit 0 is the one borrowed above, whichever unit the guest had active. */
+                PFN_CALL(glBindTexture(GL_TEXTURE_2D, unit0_texture_binding));
                 PFN_CALL(glActiveTexture(save_map.texture));
-                PFN_CALL(glBindTexture(GL_TEXTURE_2D, save_map.texture_binding));
             }
             PFN_CALL(glDisableVertexAttribArray(0));
             PFN_CALL(glViewport(save_map.view[0], save_map.view[1],
