@@ -263,6 +263,7 @@ static int *iattribs_fb(Display *dpy, const int do_msaa)
 
 static Display     *dpy;
 static Window       win;
+static int          win_generation;
 static XVisualInfo *xvi;
 static int          xvidmode;
 static const char  *xstr, *xcstr;
@@ -402,6 +403,7 @@ static void MesaInitGammaRamp(void)
 static void cwnd_mesagl(void *swnd, void *nwnd, void *opaque)
 {
     win = (Window)nwnd;
+    win_generation = mesa_gui_window_generation();
     DPRINTF("MESAGL window [native %p] ready", nwnd);
     qatomic_set(&wnd_ready, 1);
 }
@@ -590,6 +592,14 @@ int MGLChoosePixelFormat(void)
 int MGLSetPixelFormat(int fmt, const void *p)
 {
     int ret;
+    /* The GUI destroys and rebuilds the window when a Glide session with a window of its own ends.
+     * A guest that kept its GL DLL loaded across that still holds the old id, a dead drawable -- docs/LOG.md [592].
+     */
+    const int current_generation = mesa_gui_window_generation();
+    if (xvi && (win_generation != current_generation)) {
+        DPRINTF("MESAGL window [native %p] replaced by the GUI, preparing again", (void *)win);
+        MGLWndRelease();
+    }
     ret = (xvi == 0)? MGLPresetPixelFormat():1;
     TmpContextPurge();
     DPRINTF("SetPixelFormat() ret %d", ret);
