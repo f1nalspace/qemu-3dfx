@@ -248,7 +248,14 @@ void MesaBlitFree(void)
         PFN_CALL(glDeleteBuffers(1, &blit.vbo));
     if (blit.vao)
         PFN_CALL(glDeleteVertexArrays(1, &blit.vao));
+    /* The guest's window outlives its GL context, and the wrapper reports its size only when it changes.
+     * A game that recreates the context at the same size would otherwise leave the host without it -- docs/LOG.md [597].
+     */
+    const int guest_client_width = blit.guest_client_width;
+    const int guest_client_height = blit.guest_client_height;
     memset(&blit, 0, sizeof(blit));
+    blit.guest_client_width = guest_client_width;
+    blit.guest_client_height = guest_client_height;
 }
 struct save_states {
     int view[4];
