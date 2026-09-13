@@ -901,8 +901,23 @@ static BOOL ctx_list_destroy(HGLRC dhglrc)
 		prev = ptr;
 		ptr = ptr->next;
 	}
-	
+
 	return FALSE;
+}
+
+/* called on DLL_PROCESS_DETACH, opengl32.dll deletes its contexts only after that */
+void ctx_list_forget_all(void)
+{
+	HANDLE process_heap = GetProcessHeap();
+
+	while(ctx_list_first != NULL)
+	{
+		ctx_list_t *next = ctx_list_first->next;
+		HeapFree(process_heap, 0, ctx_list_first);
+		ctx_list_first = next;
+	}
+
+	dhglrc_active = 0;
 }
 
 /**

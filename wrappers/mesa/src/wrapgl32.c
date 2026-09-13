@@ -17813,6 +17813,7 @@ LRESULT CALLBACK CallWndProc(int nCode, WPARAM wParam, LPARAM lParam)
 
 #ifdef ICDDRIVER
 HINSTANCE DLLModule = NULL;
+void ctx_list_forget_all(void);
 #endif
 
 void load_rev()
@@ -17947,6 +17948,11 @@ BOOL APIENTRY DllMain( HINSTANCE hModule,
                 FiniMesaPTMMBase(&drv);
                 drv.Fini();
             }
+            /* The pass-through is unmapped, late Drv calls must not reach it. */
+            currPixFmt = 0;
+#ifdef ICDDRIVER
+            ctx_list_forget_all();
+#endif
 #ifdef DEBUG_GLSTUB
             fclose(logfp);
 #endif
