@@ -66,10 +66,10 @@ static void measureAndReport(const char *what, const LONGLONG counterFrequency)
     kernelMilliseconds = (double)(after.kernelTickCount - before.kernelTickCount);
 
     printf("%s\n", what);
-    printf("  QueryPerformanceCounter : %10.1f ms   (Bezug)\n", referenceMilliseconds);
-    printf("  timeGetTime             : %10.1f ms   Faktor %.4f\n",
+    printf("  QueryPerformanceCounter : %10.1f ms   (reference)\n", referenceMilliseconds);
+    printf("  timeGetTime             : %10.1f ms   factor %.4f\n",
            multimediaMilliseconds, multimediaMilliseconds / referenceMilliseconds);
-    printf("  GetTickCount            : %10.1f ms   Faktor %.4f\n",
+    printf("  GetTickCount            : %10.1f ms   factor %.4f\n",
            kernelMilliseconds, kernelMilliseconds / referenceMilliseconds);
     fflush(stdout);
 }
@@ -136,24 +136,24 @@ int main(void)
     HGLRC renderingContext;
 
     if (!QueryPerformanceFrequency(&counterFrequency) || !counterFrequency.QuadPart) {
-        printf("Kein Leistungszaehler vorhanden -- Messung nicht moeglich.\n");
+        printf("No performance counter present -- cannot measure.\n");
         return 1;
     }
-    printf("timecheck -- Uhren im Gast, gemessen gegen QueryPerformanceCounter\n");
-    printf("Zaehlerfrequenz: %I64d Hz, Messdauer je Durchgang: %d s\n\n",
+    printf("timecheck -- clocks in the guest, measured against QueryPerformanceCounter\n");
+    printf("Counter frequency: %I64d Hz, measuring time per pass: %d s\n\n",
            counterFrequency.QuadPart, measuredSeconds);
 
-    measureAndReport("Vor dem GL-Kontext (ungehakt):", counterFrequency.QuadPart);
+    measureAndReport("Before the GL context (unhooked):", counterFrequency.QuadPart);
 
     renderingContext = createGlContext(&deviceContext, &window);
     if (!renderingContext) {
-        printf("\nKein GL-Kontext -- der zweite Durchgang faellt aus.\n");
+        printf("\nNo GL context -- the second pass is skipped.\n");
         return 1;
     }
     printf("\nGL-Kontext steht: %s\n", (const char *)glGetString(GL_RENDERER));
     printf("\n");
 
-    measureAndReport("Nach dem GL-Kontext (gehakt, falls der Haken greift):", counterFrequency.QuadPart);
+    measureAndReport("After the GL context (hooked, if the hook takes):", counterFrequency.QuadPart);
 
     /* The wrapper patches the import table when it comes up, and it may not consider itself
      * up before the first frame reaches the screen. So: present a few, then measure again.
@@ -165,9 +165,9 @@ int main(void)
         SwapBuffers(deviceContext);
     }
     printf("\n");
-    measureAndReport("Nach den Bildwechseln:", counterFrequency.QuadPart);
+    measureAndReport("After the buffer swaps:", counterFrequency.QuadPart);
 
-    printf("\nEin Faktor deutlich ueber 1 heisst: die Uhr laeuft zu schnell, und das Spiel mit ihr.\n");
+    printf("\nA factor well above 1 means: the clock runs too fast, and the game with it.\n");
 
     wglMakeCurrent(NULL, NULL);
     wglDeleteContext(renderingContext);

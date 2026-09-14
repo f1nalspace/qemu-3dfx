@@ -266,7 +266,7 @@ static HWND create_window(int clientWidth, int clientHeight, int fullscreen)
     windowWidth  = desiredClientArea.right  - desiredClientArea.left;
     windowHeight = desiredClientArea.bottom - desiredClientArea.top;
 
-    window = CreateWindowExA(0, windowClassName, "d3dcube -- Direct3D-Prueffall fuer qemu-3dfx",
+    window = CreateWindowExA(0, windowClassName, "d3dcube -- Direct3D test case for qemu-3dfx",
                              windowStyle, CW_USEDEFAULT, CW_USEDEFAULT,
                              windowWidth, windowHeight, NULL, NULL, moduleInstance, NULL);
     return window;
@@ -309,13 +309,13 @@ static void report_adapter(IDirect3D8 *direct3d)
         printf("  VendorId    : 0x%04lx  DeviceId: 0x%04lx\n",
                (unsigned long)identifier.VendorId, (unsigned long)identifier.DeviceId);
     } else {
-        printf("  GetAdapterIdentifier gescheitert: 0x%08lx\n", (unsigned long)identifierResult);
+        printf("  GetAdapterIdentifier failed: 0x%08lx\n", (unsigned long)identifierResult);
     }
 
     memset(&displayMode, 0, sizeof(displayMode));
     displayModeResult = IDirect3D8_GetAdapterDisplayMode(direct3d, D3DADAPTER_DEFAULT, &displayMode);
     if (SUCCEEDED(displayModeResult)) {
-        printf("  Bildschirm  : %u x %u, Format %u, %u Hz\n",
+        printf("  Display     : %u x %u, format %u, %u Hz\n",
                displayMode.Width, displayMode.Height,
                (unsigned)displayMode.Format, displayMode.RefreshRate);
     }
@@ -326,12 +326,12 @@ static void report_adapter(IDirect3D8 *direct3d)
         unsigned long vertexShaderVersion = (unsigned long)capabilities.VertexShaderVersion;
         unsigned long pixelShaderVersion  = (unsigned long)capabilities.PixelShaderVersion;
 
-        printf("  HAL vorhanden. MaxTextureWidth %lu, VertexShader %lu.%lu, PixelShader %lu.%lu\n",
+        printf("  HAL present. MaxTextureWidth %lu, VertexShader %lu.%lu, PixelShader %lu.%lu\n",
                (unsigned long)capabilities.MaxTextureWidth,
                (vertexShaderVersion >> 8) & 0xFF, vertexShaderVersion & 0xFF,
                (pixelShaderVersion  >> 8) & 0xFF, pixelShaderVersion  & 0xFF);
     } else {
-        printf("  KEIN HAL: GetDeviceCaps gab 0x%08lx zurueck.\n", (unsigned long)capabilitiesResult);
+        printf("  NO HAL: GetDeviceCaps returned 0x%08lx.\n", (unsigned long)capabilitiesResult);
     }
     fflush(stdout);
 }
@@ -394,14 +394,14 @@ int main(int argc, char **argv)
         }
     }
 
-    printf("d3dcube -- Direct3D-Prueffall fuer qemu-3dfx\n");
-    printf("Direct3DCreate8 aus: %s\n", libraryName);
+    printf("d3dcube -- Direct3D test case for qemu-3dfx\n");
+    printf("Direct3DCreate8 from: %s\n", libraryName);
     fflush(stdout);
 
     direct3dLibrary = LoadLibraryA(libraryName);
     if (direct3dLibrary == NULL) {
         DWORD loadError = GetLastError();
-        printf("FEHLER: %s liess sich nicht laden (Fehler %lu).\n", libraryName, (unsigned long)loadError);
+        printf("ERROR: %s could not be loaded (error %lu).\n", libraryName, (unsigned long)loadError);
         return 1;
     }
 
@@ -410,13 +410,13 @@ int main(int argc, char **argv)
     createEntryPoint = GetProcAddress(direct3dLibrary, "Direct3DCreate8");
     direct3dCreate = (Direct3DCreate8Function)(void *)createEntryPoint;
     if (direct3dCreate == NULL) {
-        printf("FEHLER: %s hat keinen Einsprung Direct3DCreate8.\n", libraryName);
+        printf("ERROR: %s has no Direct3DCreate8 entry point.\n", libraryName);
         return 1;
     }
 
     direct3d = direct3dCreate(D3D_SDK_VERSION);
     if (direct3d == NULL) {
-        printf("FEHLER: Direct3DCreate8 gab NULL zurueck.\n");
+        printf("ERROR: Direct3DCreate8 returned NULL.\n");
         return 1;
     }
 
@@ -429,7 +429,7 @@ int main(int argc, char **argv)
 
     window = create_window(renderWidth, renderHeight, fullscreen);
     if (window == NULL) {
-        printf("FEHLER: Fenster liess sich nicht anlegen.\n");
+        printf("ERROR: the window could not be created.\n");
         IDirect3D8_Release(direct3d);
         return 1;
     }
@@ -439,7 +439,7 @@ int main(int argc, char **argv)
     memset(&displayMode, 0, sizeof(displayMode));
     result = IDirect3D8_GetAdapterDisplayMode(direct3d, D3DADAPTER_DEFAULT, &displayMode);
     if (FAILED(result)) {
-        printf("FEHLER: GetAdapterDisplayMode gab 0x%08lx zurueck.\n", (unsigned long)result);
+        printf("ERROR: GetAdapterDisplayMode returned 0x%08lx.\n", (unsigned long)result);
         IDirect3D8_Release(direct3d);
         return 1;
     }
@@ -471,26 +471,26 @@ int main(int argc, char **argv)
     result = IDirect3D8_CreateDevice(direct3d, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window,
                                      D3DCREATE_SOFTWARE_VERTEXPROCESSING, &presentParameters, &device);
     if (FAILED(result)) {
-        printf("FEHLER: CreateDevice gab 0x%08lx zurueck.\n", (unsigned long)result);
-        printf("        Das ist der Punkt, an dem ein fehlender GL-Kontext zuschlaegt.\n");
+        printf("ERROR: CreateDevice returned 0x%08lx.\n", (unsigned long)result);
+        printf("        This is the point where a missing GL context strikes.\n");
         IDirect3D8_Release(direct3d);
         return 1;
     }
-    printf("Geraet angelegt: %s, %d x %d\n", fullscreen ? "Vollbild" : "Fenster", renderWidth, renderHeight);
+    printf("Device created: %s, %d x %d\n", fullscreen ? "fullscreen" : "windowed", renderWidth, renderHeight);
     fflush(stdout);
 
     result = IDirect3DDevice8_CreateVertexBuffer(device, sizeof(CubeVertex) * CUBE_VERTEX_COUNT,
                                                  D3DUSAGE_WRITEONLY, CUBE_VERTEX_FORMAT,
                                                  D3DPOOL_MANAGED, &vertexBuffer);
     if (FAILED(result)) {
-        printf("FEHLER: CreateVertexBuffer gab 0x%08lx zurueck.\n", (unsigned long)result);
+        printf("ERROR: CreateVertexBuffer returned 0x%08lx.\n", (unsigned long)result);
         return 1;
     }
 
     lockedBytes = NULL;
     result = IDirect3DVertexBuffer8_Lock(vertexBuffer, 0, 0, &lockedBytes, 0);
     if (FAILED(result)) {
-        printf("FEHLER: Lock auf den Eckenpuffer gab 0x%08lx zurueck.\n", (unsigned long)result);
+        printf("ERROR: Lock on the vertex buffer returned 0x%08lx.\n", (unsigned long)result);
         return 1;
     }
     fill_cube_vertices((CubeVertex *)lockedBytes);
@@ -500,14 +500,14 @@ int main(int argc, char **argv)
                                                 D3DUSAGE_WRITEONLY, D3DFMT_INDEX16,
                                                 D3DPOOL_MANAGED, &indexBuffer);
     if (FAILED(result)) {
-        printf("FEHLER: CreateIndexBuffer gab 0x%08lx zurueck.\n", (unsigned long)result);
+        printf("ERROR: CreateIndexBuffer returned 0x%08lx.\n", (unsigned long)result);
         return 1;
     }
 
     lockedBytes = NULL;
     result = IDirect3DIndexBuffer8_Lock(indexBuffer, 0, 0, &lockedBytes, 0);
     if (FAILED(result)) {
-        printf("FEHLER: Lock auf den Indexpuffer gab 0x%08lx zurueck.\n", (unsigned long)result);
+        printf("ERROR: Lock on the index buffer returned 0x%08lx.\n", (unsigned long)result);
         return 1;
     }
     fill_cube_indices((WORD *)lockedBytes);
@@ -614,13 +614,13 @@ int main(int argc, char **argv)
     }
 
     now = seconds_now();
-    printf("gesamt: %ld frames in %.1f seconds, %.1f FPS\n",
+    printf("total: %ld frames in %.1f seconds, %.1f FPS\n",
            framesTotal, now - startTime, framesTotal / (now - startTime));
     fflush(stdout);
 
-    printf("Transparenz ueber Direct3D 8: %s\n",
-           transparencyLogo.usable ? (transparencyPassed ? "in Ordnung" : "FEHLERHAFT")
-                                   : "nicht geprueft");
+    printf("Transparency through Direct3D 8: %s\n",
+           transparencyLogo.usable ? (transparencyPassed ? "fine" : "BROKEN")
+                                   : "not tested");
     fflush(stdout);
 
     keylogo_d3d8_release(&transparencyLogo);

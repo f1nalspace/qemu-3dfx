@@ -40,14 +40,14 @@ int main(int argc, char **argv)
 
     Display *display = XOpenDisplay(NULL);
     if (!display) {
-        fprintf(stderr, "gammafix: kein X-Display erreichbar (DISPLAY gesetzt?)\n");
+        fprintf(stderr, "gammafix: no X display reachable (is DISPLAY set?)\n");
         return 1;
     }
     int screen = DefaultScreen(display);
 
     int eventBase, errorBase;
     if (!XF86VidModeQueryExtension(display, &eventBase, &errorBase)) {
-        fprintf(stderr, "gammafix: XF86VidMode-Erweiterung fehlt\n");
+        fprintf(stderr, "gammafix: the XF86VidMode extension is missing\n");
         XCloseDisplay(display);
         return 1;
     }
@@ -55,7 +55,7 @@ int main(int argc, char **argv)
     int rampSize = 0;
     XF86VidModeGetGammaRampSize(display, screen, &rampSize);
     if (rampSize != gammaRampSize256 && rampSize != gammaRampSize1024 && rampSize != gammaRampSize2048) {
-        fprintf(stderr, "gammafix: unerwartete Rampengroesse %d\n", rampSize);
+        fprintf(stderr, "gammafix: unexpected ramp size %d\n", rampSize);
         XCloseDisplay(display);
         return 1;
     }
@@ -73,11 +73,11 @@ int main(int argc, char **argv)
         }
         XF86VidModeSetGammaRamp(display, screen, rampSize, red, green, blue);
         XSync(display, False);
-        printf("gammafix: lineare Rampe geschrieben, %d Stufen\n", rampSize);
+        printf("gammafix: linear ramp written, %d steps\n", rampSize);
     }
     else {
         XF86VidModeGetGammaRamp(display, screen, rampSize, red, green, blue);
-        printf("Rampengroesse: %d\n", rampSize);
+        printf("Ramp size: %d\n", rampSize);
 
         int largestDeviation = 0;
         for (int i = 0; i < rampSize; i++) {
@@ -86,16 +86,16 @@ int main(int argc, char **argv)
             if (deviation < 0) deviation = -deviation;
             if (deviation > largestDeviation) largestDeviation = deviation;
         }
-        printf("Groesste Abweichung von der Identitaet: %d von 65535\n", largestDeviation);
+        printf("Largest deviation from identity: %d of 65535\n", largestDeviation);
 
         const int sampleCount = 5;
         for (int s = 0; s < sampleCount; s++) {
             int index = (rampSize - 1) * s / (sampleCount - 1);
-            printf("  [%4d] r=%5u g=%5u b=%5u   (linear waere %5u)\n",
+            printf("  [%4d] r=%5u g=%5u b=%5u   (linear would be %5u)\n",
                 index, red[index], green[index], blue[index], IdentityRampValue(index, rampSize));
         }
         if (largestDeviation > 256)
-            printf("\nDie Rampe ist NICHT linear. Mit \"gammafix --reset\" zuruecksetzen.\n");
+            printf("\nThe ramp is NOT linear. Reset it with \"gammafix --reset\".\n");
     }
 
     free(red);

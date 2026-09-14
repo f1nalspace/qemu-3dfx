@@ -1,115 +1,113 @@
-# d3dcube — ein Prüffall für den Direct3D-Pfad
+# d3dcube — a test case for the Direct3D path
 
-Das Gegenstück zu `glidecube`, nur eine Schnittstelle höher: derselbe rotierende,
-Gouraud-schattierte Würfel mit Tiefenpuffer, diesmal über **Direct3D 8**. Dazu die
-Bildrate und das, was `GetAdapterIdentifier` meldet.
+The counterpart to `glidecube`, one interface higher up: the same rotating,
+Gouraud-shaded cube with a depth buffer, this time over **Direct3D 8**. Plus the frame
+rate and what `GetAdapterIdentifier` reports.
 
-Belegt werden soll die Kette
+What it is meant to prove is the chain
 
-    d3dcube → D3D8 → WineD3D (wine9x) → OPENGL32.DLL (qemu-3dfx) → MESAPT → Host-GPU
+    d3dcube → D3D8 → WineD3D (wine9x) → OPENGL32.DLL (qemu-3dfx) → MESAPT → host GPU
 
-## Warum nicht `dxdiag`
+## Why not `dxdiag`
 
-`dxdiag` setzt ein installiertes DirectX-Redistributable voraus. Der kürzere Weg
-ergibt sich aus den Importen der wine9x-DLLs: `wined8.dll` hängt an nichts außer
-`wined3d.dll` und `msvcrt`, und es exportiert `Direct3DCreate8`. Deshalb holt
-`d3dcube` diesen Einsprung per `LoadLibrary` aus einer **wählbaren** DLL, statt ihn
-zu binden:
+`dxdiag` presupposes an installed DirectX redistributable. The shorter route follows from
+the imports of the wine9x DLLs: `wined8.dll` depends on nothing but `wined3d.dll` and
+`msvcrt`, and it exports `Direct3DCreate8`. So `d3dcube` fetches that entry point through
+`LoadLibrary` from a **selectable** DLL instead of linking against it:
 
-    -dll d3d8.dll      der gewöhnliche Weg. Auf dem Host unter Wine ist das Wines
-                       eigenes d3d8; im Gast das von Microsoft oder der Umschalter.
-    -dll wined8.dll    unmittelbar die Wine-Umsetzung aus wine9x. Damit braucht der
-                       Gast weder DirectX noch den Umschalter.
+    -dll d3d8.dll      the ordinary route. On the host under Wine that is Wine's own
+                       d3d8; in the guest the one from Microsoft, or the switcher.
+    -dll wined8.dll    the Wine implementation from wine9x directly. That way the guest
+                       needs neither DirectX nor the switcher.
 
-## Aufbau
+## Layout
 
-    src/d3dcube.c   das Programm
-    Makefile        ein Bauweg, zwei Laufumgebungen
-    build/          Bauergebnis, nicht im Git
+    src/d3dcube.c   the program
+    Makefile        one build route, two runtime environments
+    build/          build output, not in git
 
-Reines C89 ohne `d3dx` und ohne C++. Die Matrizen sind von Hand aufgebaut, damit die
-Quelle auch unter Visual C++ 6.0 im Gast übersetzt, ohne dass dort das DirectX-SDK
-liegen muss.
+Plain C89 without `d3dx` and without C++. The matrices are built by hand so that the
+source also compiles under Visual C++ 6.0 in the guest, without the DirectX SDK having to
+be there.
 
-## Bauen
+## Building
 
 ```sh
 make
 ```
 
-Erzeugt `build/D3DCUBE.EXE`. **Dieselbe EXE** läuft auf dem Host unter Wine und im
-Gast unter Windows 98 — damit sind die beiden Bildraten unmittelbar vergleichbar,
-ohne dass zwei Übersetzungen dazwischenstehen.
+Produces `build/D3DCUBE.EXE`. **The same EXE** runs on the host under Wine and in the
+guest under Windows 98 — which makes the two frame rates directly comparable, with no two
+separate compilations in between.
 
-Zwei Schalter sind entscheidend, dieselben wie bei `glidecube` und beim
-qemu-3dfx-Wrapper:
+Two switches are decisive, the same as for `glidecube` and for the qemu-3dfx wrapper:
 
-- `-march=pentium2` wegen der Gast-CPU (`-cpu pentium3`)
-- `-mcrtdll=msvcrt-os` wegen Windows 98. Ohne ihn bindet die Werkzeugkette auf Arch
-  gegen die UCRT, die es unter Windows 9x nicht gibt.
+- `-march=prescott -mtune=core2` because of the guest CPU (`-cpu coreduo`, SSE3 is the
+  ceiling)
+- `-mcrtdll=msvcrt-os` because of Windows 98. Without it the toolchain on Arch links
+  against the UCRT, which does not exist under Windows 9x.
 
-Der Bau prüft das gleich selbst nach: in der Abhängigkeitsliste darf kein
-`api-ms-win-crt` auftauchen.
+The build checks that itself right away: no `api-ms-win-crt` may show up in the dependency
+list.
 
-## Auf dem Host laufen lassen
+## Running it on the host
 
 ```sh
-make hostinfo     # nur die Adapterangaben
-make hostrun      # zeichnen
+make hostinfo     # the adapter data only
+make hostrun      # draw
 ```
 
-Achtung bei der Bildrate: im **Fenstermodus** schreibt Direct3D 8
-`D3DPRESENT_INTERVAL_DEFAULT` vor, das Programm kann den Strahlrücklauf gar nicht
-abwählen. Ohne Zutun misst man deshalb die Bildwiederholrate des Monitors und nicht
-den Durchsatz. Auf dem Host hilft der Treiber:
+Mind the frame rate: in **windowed** mode Direct3D 8 prescribes
+`D3DPRESENT_INTERVAL_DEFAULT`, and the program cannot deselect the vertical retrace at
+all. Without help you therefore measure the monitor's refresh rate and not the throughput.
+On the host the driver helps:
 
 ```sh
 __GL_SYNC_TO_VBLANK=0 vblank_mode=0 wine build/D3DCUBE.EXE 15
 ```
 
-## Im Gast laufen lassen
+## Running it in the guest
 
-Ein Verzeichnis, alles wieder wegzuwerfen:
+One directory, all of it throwaway:
 
     C:\D3DTEST\
       D3DCUBE.EXE
-      opengl32.dll     ← qemu-3dfx-Wrapper
+      opengl32.dll     ← qemu-3dfx wrapper
       wined3d.dll  winedd.dll  wined8.dll  wined9.dll
-      wrapgl32.ext     ← eine Zeile: ContextVsyncOff,1
+      wrapgl32.ext     ← one line: ContextVsyncOff,1
 
 ```
-D3DCUBE.EXE -dll wined8.dll -info      Adapterangaben
-D3DCUBE.EXE 15 -dll wined8.dll         zeichnen, 15 Sekunden
+D3DCUBE.EXE -dll wined8.dll -info      adapter data
+D3DCUBE.EXE 15 -dll wined8.dll         draw, 15 seconds
 ```
 
-Der Strahlrücklauf wird hier nicht über den Treiber abgewählt, sondern über den
-Wrapper: `ContextVsyncOff,1` in `wrapgl32.ext` **neben der EXE**. Der Wrapper sucht
-die Datei über `GetModuleFileName(NULL, …)`, es ist dieselbe, über die auch
-`ExtensionsYear` gesetzt wird.
+Here the vertical retrace is not deselected through the driver but through the wrapper:
+`ContextVsyncOff,1` in `wrapgl32.ext` **next to the EXE**. The wrapper looks for the file
+through `GetModuleFileName(NULL, …)`; it is the same one `ExtensionsYear` is set in.
 
-Ohne diese Zeile bleibt die Bildrate bei der Bildwiederholrate des **Host**-Monitors
-hängen — was für sich schon zeigt, dass die Darstellung dort stattfindet.
+Without that line the frame rate stays pinned to the refresh rate of the **host** monitor
+— which by itself shows that the drawing happens there.
 
-## Aufruf
+## Usage
 
-    d3dcube [Sekunden] [-dll NAME] [-info] [-fs] [-vsync]
+    d3dcube [seconds] [-dll NAME] [-info] [-fs] [-vsync]
 
-    Sekunden   Laufzeit, Voreinstellung 15. 0 heisst endlos.
-    -dll NAME  DLL, die Direct3DCreate8 liefert. Voreinstellung d3d8.dll.
-    -info      nur die Angaben zum Adapter ausgeben, nichts zeichnen.
-    -fs        Vollbild 640x480 statt Fenster.
-    -vsync     auf den Strahlruecklauf warten (nur im Vollbild wirksam).
+    seconds    run time, default 15. 0 means endless.
+    -dll NAME  DLL providing Direct3DCreate8. Default d3d8.dll.
+    -info      print the adapter data only, draw nothing.
+    -fs        fullscreen 640x480 instead of a window.
+    -vsync     wait for the vertical retrace (only effective in fullscreen).
 
-## Ergebnisse
+## Results
 
-Siehe `docs/LOG.md` [124]–[131].
+See `docs/LOG.md` [124]–[131].
 
-| | Bildrate |
+| | Frame rate |
 |---|---|
-| Host, Wines heutiges WineD3D, unmittelbar auf die GPU | 11.031,4 FPS |
-| Gast, wine9x-WineD3D über Wrapper → QEMU → Host-GL | 7.843,5 FPS |
+| Host, Wine's current WineD3D, straight onto the GPU | 11,031.4 FPS |
+| Guest, wine9x WineD3D over wrapper → QEMU → host GL | 7,843.5 FPS |
 
-Die 71 % sind ein **Systemvergleich**, keine isolierte Messung des Passthroughs: auf
-dem Host lief Wines heutiges WineD3D, im Gast das von 1.7.55 aus wine9x. Der Versuch,
-dieselben DLLs auf beiden Seiten zu fahren, ist gescheitert — sie sind gegen `nocrt`
-und `pthread9x` gebaut und stürzen unter heutigem Wine ab [131].
+The 71 % are a **system comparison**, not an isolated measurement of the pass-through: on
+the host Wine's current WineD3D was running, in the guest the one from 1.7.55 out of
+wine9x. The attempt to run the same DLLs on both sides failed — they are built against
+`nocrt` and `pthread9x` and crash under today's Wine [131].

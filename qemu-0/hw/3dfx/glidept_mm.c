@@ -109,6 +109,7 @@ static uint64_t glidept_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (addr) {
 	case 0xfb8:
+            glide_context_restore();
             val = stat_window(s->GrRes, &s->disp_cb);
 	    break;
 	case 0xfbc:
@@ -686,6 +687,7 @@ static void processFRet(GlidePTState *s)
 	    fini_window(&s->disp_cb);
 	    s->perfs.last();
 	    DPRINTF("%-64s", "grSstWinClose called");
+            DPRINTF("GL context restored %u times since start", glide_context_restore_count());
 	    break;
 	case FEnum_grGlideInit:
             s->szGrState = ALIGNED(SIZE_GRSTATE);
@@ -937,6 +939,7 @@ static void glidept_write(void *opaque, hwaddr addr, uint64_t val, unsigned size
 {
     COMMIT_SIGN;
     GlidePTState *s = opaque;
+    glide_context_restore();
 
     switch (addr) {
 	case 0xfb0:

@@ -15,6 +15,8 @@ typedef struct {
      * buffer instead of a host pointer, which is the case PushVertexArray must skip.
      */
     unsigned int room;
+    /* 1 when the pointer was set with no array buffer bound: application memory, sent along with every draw. 0 for an offset into a buffer object. */
+    int client;
 } vtxarry_t;
 
 #define PAGE_SIZE       0x1000

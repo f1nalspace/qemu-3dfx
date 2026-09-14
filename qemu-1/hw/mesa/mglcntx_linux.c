@@ -263,6 +263,7 @@ static int *iattribs_fb(Display *dpy, const int do_msaa)
 
 static Display     *dpy;
 static Window       win;
+static int          win_generation;
 static XVisualInfo *xvi;
 static int          xvidmode;
 static const char  *xstr, *xcstr;
@@ -402,8 +403,47 @@ static void MesaInitGammaRamp(void)
 static void cwnd_mesagl(void *swnd, void *nwnd, void *opaque)
 {
     win = (Window)nwnd;
+    win_generation = mesa_gui_window_generation();
     DPRINTF("MESAGL window [native %p] ready", nwnd);
     qatomic_set(&wnd_ready, 1);
+}
+
+/* Glide runs on the same vCPU thread and makes its own context current -- docs/LOG.md [715].
+ * Remember what the guest made current, so it can be taken back before the next call.
+ */
+static Display *current_display;
+static GLXDrawable current_draw, current_read;
+static GLXContext current_context;
+static uint32_t current_context_restores;
+
+static void MGLRememberCurrent(Display *display, GLXDrawable draw, GLXDrawable read, GLXContext context)
+{
+    current_display = display;
+    current_draw = draw;
+    current_read = read;
+    current_context = context;
+}
+
+static void MGLReleaseCurrent(void)
+{
+    glXMakeContextCurrent(dpy, None, None, NULL);
+    MGLRememberCurrent(NULL, None, None, NULL);
+}
+
+void MGLRestoreCurrent(void)
+{
+    if (!current_context)
+        return;
+    const GLXContext thread_context = glXGetCurrentContext();
+    if (thread_context == current_context)
+        return;
+    glXMakeContextCurrent(current_display, current_draw, current_read, current_context);
+    current_context_restores++;
+}
+
+uint32_t MGLRestoreCount(void)
+{
+    return current_context_restores;
 }
 
 static void TmpContextPurge(void)
@@ -411,6 +451,8 @@ static void TmpContextPurge(void)
     int n;
     for (n = MAX_LVLCNTX; ((n > 1) && !ctx[--n]););
     if ((n == 1) && ctx[--n]) {
+        if (current_context == ctx[n])
+            MGLRememberCurrent(NULL, None, None, NULL);
         glXDestroyContext(dpy, ctx[n]);
         DPRINTF("MESAGL curr %d cntx [%p] purge %d", n, ctx[n], 1);
         ctx[n] = 0;
@@ -447,7 +489,7 @@ void MGLTmpContext(void)
 void MGLDeleteContext(int level)
 {
     int n = (level)? ((level % MAX_LVLCNTX)? (level % MAX_LVLCNTX):1):level;
-    glXMakeContextCurrent(dpy, None, None, NULL);
+    MGLReleaseCurrent();
     if (n) {
         glXDestroyContext(dpy, ctx[n]);
         ctx[n] = 0;
@@ -468,11 +510,12 @@ void MGLWndRelease(void)
 {
     if (win) {
         if (ctx[0]) {
-            glXMakeContextCurrent(dpy, None, None, NULL);
+            MGLReleaseCurrent();
             glXDestroyContext(dpy, ctx[0]);
         }
         RestoreHostGammaRamp();
         XFree(xvi);
+        MGLRememberCurrent(NULL, None, None, NULL);
         XCloseDisplay(dpy);
         mesa_release_window();
         CompareAttribArray(NULL);
@@ -491,7 +534,7 @@ int MGLCreateContext(uint32_t gDC)
         ret = 0;
     }
     else {
-        glXMakeContextCurrent(dpy, None, None, NULL);
+        MGLReleaseCurrent();
         for (i = MAX_LVLCNTX; i > 1;) {
             if (ctx[--i]) {
                 glXDestroyContext(dpy, ctx[i]);
@@ -511,6 +554,7 @@ int MGLMakeCurrent(uint32_t cntxRC, int level)
     uint32_t i = cntxRC & (MAX_PBUFFER - 1);
     if (cntxRC == (MESAGL_MAGIC - n)) {
         glXMakeContextCurrent(dpy, win, win, ctx[n]);
+        MGLRememberCurrent(dpy, win, win, ctx[n]);
         InitMesaGLExt();
         wrContextSRGB(ContextUseSRGB());
         if (ContextVsyncOff()) {
@@ -527,8 +571,10 @@ int MGLMakeCurrent(uint32_t cntxRC, int level)
         if (!n)
             MGLActivateHandler(1, 0);
     }
-    if (cntxRC == (((MESAGL_MAGIC & 0xFFFFFFFU) << 4) | i))
+    if (cntxRC == (((MESAGL_MAGIC & 0xFFFFFFFU) << 4) | i)) {
         glXMakeContextCurrent(dpy, PBDC[i], PBDC[i], PBRC[i]);
+        MGLRememberCurrent(dpy, PBDC[i], PBDC[i], PBRC[i]);
+    }
 
     return 0;
 }
@@ -590,6 +636,14 @@ int MGLChoosePixelFormat(void)
 int MGLSetPixelFormat(int fmt, const void *p)
 {
     int ret;
+    /* The GUI destroys and rebuilds the window when a Glide session with a window of its own ends.
+     * A guest that kept its GL DLL loaded across that still holds the old id, a dead drawable -- docs/LOG.md [592].
+     */
+    const int current_generation = mesa_gui_window_generation();
+    if (xvi && (win_generation != current_generation)) {
+        DPRINTF("MESAGL window [native %p] replaced by the GUI, preparing again", (void *)win);
+        MGLWndRelease();
+    }
     ret = (xvi == 0)? MGLPresetPixelFormat():1;
     TmpContextPurge();
     DPRINTF("SetPixelFormat() ret %d", ret);
@@ -821,7 +875,7 @@ void MGLFuncHandler(const char *name)
             for (i = 0; ((i < MAX_LVLCNTX) && ctx[i]); i++);
             argsp[1] = (argsp[0])? i:0;
             if (argsp[1] == 0) {
-                glXMakeContextCurrent(dpy, None, None, NULL);
+                MGLReleaseCurrent();
                 if (CompareAttribArray((const int *)&argsp[2])) {
                     for (i = MAX_LVLCNTX; i > 0;) {
                         if (ctx[--i]) {
@@ -836,6 +890,8 @@ void MGLFuncHandler(const char *name)
             }
             else {
                 if (i == MAX_LVLCNTX) {
+                    if (current_context == ctx[1])
+                        MGLRememberCurrent(NULL, None, None, NULL);
                     glXDestroyContext(dpy, ctx[1]);
                     for (i = 1; i < (MAX_LVLCNTX - 1); i++)
                         ctx[i] = ctx[i + 1];
@@ -945,6 +1001,8 @@ void MGLFuncHandler(const char *name)
     FUNCP_HANDLER("wglDestroyPbufferARB") {
         uint32_t i;
         i = argsp[0] & (MAX_PBUFFER - 1);
+        if (current_context == PBRC[i])
+            MGLRememberCurrent(NULL, None, None, NULL);
         glXDestroyContext(dpy, PBRC[i]);
         glXDestroyPbuffer(dpy, PBDC[i]);
         PBRC[i] = 0; PBDC[i] = 0;

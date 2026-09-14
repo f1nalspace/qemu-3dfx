@@ -4,5 +4,5 @@ REGEDIT4
 [HKEY_LOCAL_MACHINE\Software\vmdisp9x\driver]
 ; Overrides the signature the OpenGL wrapper and the ICD report to QEMU.
 ; It has to match the signature QEMU was built with, as shown by qemu-system-i386 --version.
-; f519f60 is the commit QEMU and the guest wrappers of this release were built and tested with.
-"REV_QEMU3DFX"="f519f60"
+; b6148ed is the commit QEMU and the guest wrappers of this release were built and tested with.
+"REV_QEMU3DFX"="b6148ed"

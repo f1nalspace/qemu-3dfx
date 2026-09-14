@@ -1,10 +1,10 @@
-diff -Nru ../orig/qemu-9.2.2/accel/kvm/kvm-all.c ./accel/kvm/kvm-all.c
---- ../orig/qemu-9.2.2/accel/kvm/kvm-all.c
+diff -Nru ../orig/qemu-11.1.1/accel/kvm/kvm-all.c ./accel/kvm/kvm-all.c
+--- ../orig/qemu-11.1.1/accel/kvm/kvm-all.c
 +++ ./accel/kvm/kvm-all.c
-@@ -1676,6 +1676,43 @@
+@@ -1859,6 +1859,43 @@
      return 0;
  }
-
+ 
 +void kvm_update_guest_pa_range(uint64_t start_pa, uint64_t size, void *host_va, int readonly, int add)
 +{
 +    KVMState *s = kvm_state;
@@ -45,13 +45,13 @@ diff -Nru ../orig/qemu-9.2.2/accel/kvm/kvm-all.c ./accel/kvm/kvm-all.c
  static void kvm_region_add(MemoryListener *listener,
                             MemoryRegionSection *section)
  {
-diff -Nru ../orig/qemu-9.2.2/hw/i386/pc.c ./hw/i386/pc.c
---- ../orig/qemu-9.2.2/hw/i386/pc.c
+diff -Nru ../orig/qemu-11.1.1/hw/i386/pc.c ./hw/i386/pc.c
+--- ../orig/qemu-11.1.1/hw/i386/pc.c
 +++ ./hw/i386/pc.c
-@@ -1233,6 +1233,10 @@
+@@ -1135,6 +1135,10 @@
              ? ON_OFF_AUTO_OFF : ON_OFF_AUTO_ON;
      }
-
+ 
 +    /* Glide pass-through */
 +    glidept_mm_init();
 +    /* MESA pass-through */
@@ -59,10 +59,10 @@ diff -Nru ../orig/qemu-9.2.2/hw/i386/pc.c ./hw/i386/pc.c
      /* Super I/O */
      pc_superio_init(isa_bus, create_fdctrl, pcms->i8042_enabled,
                      pcms->vmport != ON_OFF_AUTO_ON, &error_fatal);
-@@ -1261,6 +1265,23 @@
-     rom_reset_order_override();
+@@ -1159,6 +1163,23 @@
+     }
  }
-
+ 
 +void glidept_mm_init(void)
 +{
 +    DeviceState *glidept_dev = NULL;
@@ -83,10 +83,10 @@ diff -Nru ../orig/qemu-9.2.2/hw/i386/pc.c ./hw/i386/pc.c
  void pc_i8259_create(ISABus *isa_bus, qemu_irq *i8259_irqs)
  {
      qemu_irq *i8259;
-diff -Nru ../orig/qemu-9.2.2/include/hw/i386/pc.h ./include/hw/i386/pc.h
---- ../orig/qemu-9.2.2/include/hw/i386/pc.h
+diff -Nru ../orig/qemu-11.1.1/include/hw/i386/pc.h ./include/hw/i386/pc.h
+--- ../orig/qemu-11.1.1/include/hw/i386/pc.h
 +++ ./include/hw/i386/pc.h
-@@ -204,6 +204,25 @@
+@@ -198,6 +198,25 @@
  
  #define TYPE_PORT92 "port92"
  
@@ -112,34 +112,32 @@ diff -Nru ../orig/qemu-9.2.2/include/hw/i386/pc.h ./include/hw/i386/pc.h
  /* pc_sysfw.c */
  void pc_system_flash_create(PCMachineState *pcms);
  void pc_system_flash_cleanup_unused(PCMachineState *pcms);
-diff -Nru ../orig/qemu-9.2.2/include/sysemu/kvm.h ./include/sysemu/kvm.h
---- ../orig/qemu-9.2.2/include/sysemu/kvm.h
-+++ ./include/sysemu/kvm.h
-@@ -478,6 +478,8 @@
- 
- #endif /* COMPILING_PER_TARGET */
+diff -Nru ../orig/qemu-11.1.1/include/system/kvm.h ./include/system/kvm.h
+--- ../orig/qemu-11.1.1/include/system/kvm.h
++++ ./include/system/kvm.h
+@@ -459,6 +459,8 @@
+ bool kvm_arch_supports_vmfd_change(void);
+ int kvm_arch_on_vmfd_change(MachineState *ms, KVMState *s);
  
 +void kvm_update_guest_pa_range(uint64_t start_pa, uint64_t size, void *host_va, int readonly, int add);
 +
  void kvm_cpu_synchronize_state(CPUState *cpu);
  
  void kvm_init_cpu_signals(CPUState *cpu);
-diff -Nru ../orig/qemu-9.2.2/include/sysemu/whpx.h ./include/sysemu/whpx.h
---- ../orig/qemu-9.2.2/include/sysemu/whpx.h
-+++ ./include/sysemu/whpx.h
-@@ -19,6 +19,8 @@
-
- #ifdef CONFIG_WHPX
-
+diff -Nru ../orig/qemu-11.1.1/include/system/whpx.h ./include/system/whpx.h
+--- ../orig/qemu-11.1.1/include/system/whpx.h
++++ ./include/system/whpx.h
+@@ -33,4 +33,6 @@
+ #define whpx_irqchip_in_kernel() (0)
+ #endif /* !CONFIG_WHPX_IS_POSSIBLE */
+ 
 +void whpx_update_guest_pa_range(uint64_t start_pa, uint64_t size, void *host_va, int readonly, int add);
 +
- int whpx_enabled(void);
- bool whpx_apic_in_platform(void);
- 
-diff -Nru ../orig/qemu-9.2.2/include/ui/console.h ./include/ui/console.h
---- ../orig/qemu-9.2.2/include/ui/console.h
+ #endif /* QEMU_WHPX_H */
+diff -Nru ../orig/qemu-11.1.1/include/ui/console.h ./include/ui/console.h
+--- ../orig/qemu-11.1.1/include/ui/console.h
 +++ ./include/ui/console.h
-@@ -153,6 +153,8 @@
+@@ -115,6 +115,8 @@
      uint32_t  width;
      uint32_t  height;
      uint32_t  refresh_rate;
@@ -148,15 +146,15 @@ diff -Nru ../orig/qemu-9.2.2/include/ui/console.h ./include/ui/console.h
  } QemuUIInfo;
  
  /* cursor data format is 32bit RGBA */
-@@ -381,6 +383,7 @@
-                                void *opaque);
- void graphic_console_close(QemuConsole *con);
+@@ -343,6 +345,7 @@
+                                     void *opaque);
+ void qemu_graphic_console_close(QemuConsole *con);
  
 +void graphic_hw_passthrough(QemuConsole *con, bool passthrough);
- void graphic_hw_update(QemuConsole *con);
- void graphic_hw_update_done(QemuConsole *con);
- void graphic_hw_invalidate(QemuConsole *con);
-@@ -475,4 +478,23 @@
+ void qemu_console_hw_update(QemuConsole *con);
+ void qemu_console_hw_update_done(QemuConsole *con);
+ void qemu_console_hw_invalidate(QemuConsole *con);
+@@ -454,4 +457,23 @@
                                        size_t size,
                                        Error **errp);
  
@@ -180,27 +178,27 @@ diff -Nru ../orig/qemu-9.2.2/include/ui/console.h ./include/ui/console.h
 +int mesa_gui_fullscreen(int *);
 +
  #endif
-diff -Nru ../orig/qemu-9.2.2/meson.build ./meson.build
---- ../orig/qemu-9.2.2/meson.build
+diff -Nru ../orig/qemu-11.1.1/meson.build ./meson.build
+--- ../orig/qemu-11.1.1/meson.build
 +++ ./meson.build
-@@ -1561,6 +1561,7 @@
+@@ -1641,6 +1641,7 @@
      error('sdl-image required, but SDL was @0@'.format(
            get_option('sdl').disabled() ? 'disabled' : 'not found'))
    endif
 +  error('Featuring qemu-3dfx required SDL2')
    sdl_image = not_found
  endif
-
-@@ -3706,6 +3707,8 @@
-                          arguments: ['@INPUT@', '@EXTRA_ARGS@', '-o', '@OUTPUT@'])
+ 
+@@ -3806,6 +3807,8 @@
    subdir('libdecnumber')
+   subdir('gdbstub')
    subdir('target')
 +  subdir('hw/3dfx')
 +  subdir('hw/mesa')
  endif
  
- subdir('audio')
-@@ -4124,6 +4127,11 @@
+ if have_block
+@@ -4270,6 +4273,11 @@
    target_inc = [include_directories('target' / config_target['TARGET_BASE_ARCH'])]
    if host_os == 'linux'
      target_inc += include_directories('linux-headers', is_system: true)
@@ -212,13 +210,13 @@ diff -Nru ../orig/qemu-9.2.2/meson.build ./meson.build
    endif
    if target.endswith('-softmmu')
      target_type='system'
-diff -Nru ../orig/qemu-9.2.2/system/vl.c ./system/vl.c
---- ../orig/qemu-9.2.2/system/vl.c
+diff -Nru ../orig/qemu-11.1.1/system/vl.c ./system/vl.c
+--- ../orig/qemu-11.1.1/system/vl.c
 +++ ./system/vl.c
-@@ -871,6 +871,13 @@
+@@ -875,6 +875,13 @@
      return default_machineclass;
  }
-
+ 
 +static void feature(void)
 +{
 +    const char rev_[ALIGNED(1)]
@@ -229,7 +227,7 @@ diff -Nru ../orig/qemu-9.2.2/system/vl.c ./system/vl.c
  static void version(void)
  {
      printf("QEMU emulator version " QEMU_FULL_VERSION "\n"
-@@ -3004,6 +3011,7 @@
+@@ -3114,6 +3121,7 @@
                  break;
              case QEMU_OPTION_version:
                  version();
@@ -237,21 +235,21 @@ diff -Nru ../orig/qemu-9.2.2/system/vl.c ./system/vl.c
                  exit(0);
                  break;
              case QEMU_OPTION_m:
-diff -Nru ../orig/qemu-9.2.2/target/i386/whpx/whpx-all.c ./target/i386/whpx/whpx-all.c
---- ../orig/qemu-9.2.2/target/i386/whpx/whpx-all.c
-+++ ./target/i386/whpx/whpx-all.c
-@@ -10,6 +10,7 @@
-
- #include "qemu/osdep.h"
- #include "cpu.h"
-+#include "exec/ram_addr.h"
- #include "exec/address-spaces.h"
- #include "exec/ioport.h"
- #include "gdbstub/helpers.h"
-@@ -2365,6 +2366,40 @@
-                         memory_region_is_rom(mr), mr->name);
+diff -Nru ../orig/qemu-11.1.1/accel/whpx/whpx-common.c ./accel/whpx/whpx-common.c
+--- ../orig/qemu-11.1.1/accel/whpx/whpx-common.c
++++ ./accel/whpx/whpx-common.c
+@@ -13,6 +13,7 @@
+ #include "qemu/accel.h"
+ #include "accel/accel-ops.h"
+ #include "system/memory.h"
++#include "system/ramblock.h"
+ #include "system/whpx.h"
+ #include "system/cpus.h"
+ #include "system/runstate.h"
+@@ -332,6 +333,40 @@
+     }
  }
-
+ 
 +void whpx_update_guest_pa_range(uint64_t start_pa, uint64_t size, void *host_va, int readonly, int add)
 +{
 +    MemoryRegion mr;
@@ -282,39 +280,39 @@ diff -Nru ../orig/qemu-9.2.2/target/i386/whpx/whpx-all.c ./target/i386/whpx/whpx
 +    section.readonly = mr.readonly;
 +    section.nonvolatile = mr.nonvolatile;
 +
-+    whpx_process_section(&section, add);
++    whpx_set_phys_mem(&section, add);
 +    object_unref(OBJECT(&mr));
 +}
 +
  static void whpx_region_add(MemoryListener *listener,
                             MemoryRegionSection *section)
  {
-diff -Nru ../orig/qemu-9.2.2/ui/console.c ./ui/console.c
---- ../orig/qemu-9.2.2/ui/console.c
+diff -Nru ../orig/qemu-11.1.1/ui/console.c ./ui/console.c
+--- ../orig/qemu-11.1.1/ui/console.c
 +++ ./ui/console.c
-@@ -126,6 +126,11 @@
+@@ -143,6 +143,11 @@
      }
  }
-
+ 
 +void graphic_hw_passthrough(QemuConsole *con, bool passthrough)
 +{
 +    con->ui_info.passthrough = passthrough;
 +}
 +
- void graphic_hw_update_done(QemuConsole *con)
+ void qemu_console_hw_update_done(QemuConsole *con)
  {
      if (con) {
-@@ -140,6 +145,8 @@
+@@ -155,7 +160,7 @@
+     if (!con) {
          return;
      }
-     if (con->hw_ops->gfx_update) {
-+        if (con->ui_info.passthrough) { }
-+        else
-         con->hw_ops->gfx_update(con->hw);
-         async = con->hw_ops->gfx_update_async;
+-    if (!con->hw_ops->gfx_update || con->hw_ops->gfx_update(con->hw)) {
++    if (!con->hw_ops->gfx_update || con->ui_info.passthrough || con->hw_ops->gfx_update(con->hw)) {
+         qemu_console_hw_update_done(con);
      }
-diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
---- ../orig/qemu-9.2.2/ui/sdl2.c
+ }
+diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
+--- ../orig/qemu-11.1.1/ui/sdl2.c
 +++ ./ui/sdl2.c
 @@ -25,6 +25,7 @@
  
@@ -324,7 +322,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  #include "qemu/cutils.h"
  #include "ui/console.h"
  #include "ui/input.h"
-@@ -48,6 +49,183 @@
+@@ -53,6 +54,183 @@
  static SDL_Cursor *sdl_cursor_normal;
  static SDL_Cursor *sdl_cursor_hidden;
  static int absolute_enabled;
@@ -508,7 +506,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static bool guest_cursor;
  static int guest_x, guest_y;
  static SDL_Cursor *guest_sprite;
-@@ -135,6 +313,7 @@
+@@ -147,6 +325,7 @@
      if (scon->real_renderer) {
          SDL_DestroyRenderer(scon->real_renderer);
          scon->real_renderer = NULL;
@@ -516,7 +514,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      }
      SDL_DestroyWindow(scon->real_window);
      scon->real_window = NULL;
-@@ -146,9 +325,11 @@
+@@ -158,9 +337,11 @@
          return;
      }
  
@@ -528,7 +526,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  }
  
  static void sdl2_redraw(struct sdl2_console *scon)
-@@ -236,11 +417,23 @@
+@@ -248,11 +429,23 @@
      SDL_ShowCursor(SDL_ENABLE);
  }
  
@@ -553,7 +551,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          return;
      }
      /*
-@@ -249,6 +442,7 @@
+@@ -261,6 +454,7 @@
       * application (SDL bug).
       */
      if (!(SDL_GetWindowFlags(scon->real_window) & SDL_WINDOW_INPUT_FOCUS)) {
@@ -561,7 +559,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          return;
      }
      if (guest_cursor) {
-@@ -260,18 +454,31 @@
+@@ -272,18 +466,31 @@
          sdl_hide_cursor(scon);
      }
      SDL_SetWindowGrab(scon->real_window, SDL_TRUE);
@@ -594,7 +592,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static void absolute_mouse_grab(struct sdl2_console *scon)
  {
      int mouse_x, mouse_y;
-@@ -293,6 +500,7 @@
+@@ -305,6 +512,7 @@
              absolute_mouse_grab(&sdl2_console[0]);
          }
      } else if (absolute_enabled) {
@@ -602,7 +600,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          if (!gui_fullscreen) {
              sdl_grab_end(&sdl2_console[0]);
          }
-@@ -351,6 +559,8 @@
+@@ -363,6 +571,8 @@
          }
          SDL_SetWindowFullscreen(scon->real_window, 0);
      }
@@ -611,7 +609,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      sdl2_redraw(scon);
  }
  
-@@ -483,6 +693,48 @@
+@@ -495,6 +705,48 @@
      }
  }
  
@@ -660,7 +658,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static void handle_mousemotion(SDL_Event *ev)
  {
      int max_x, max_y;
-@@ -491,6 +743,9 @@
+@@ -504,6 +756,9 @@
      if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
          return;
      }
@@ -668,17 +666,31 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +        return;
 +    }
  
+     SDL_GetWindowSize(scon->real_window, &scr_w, &scr_h);
      if (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
-         int scr_w, scr_h;
-@@ -512,6 +767,7 @@
-         sdl_send_mouse_event(scon, ev->motion.xrel, ev->motion.yrel,
-                              ev->motion.x, ev->motion.y, ev->motion.state);
+@@ -524,11 +779,19 @@
+     surf_h = surface_height(scon->surface);
+     x = (int64_t)ev->motion.x * surf_w / scr_w;
+     y = (int64_t)ev->motion.y * surf_h / scr_h;
+-    dx = (int64_t)ev->motion.xrel * surf_w / scr_w;
+-    dy = (int64_t)ev->motion.yrel * surf_h / scr_h;
++    /* Only the absolute position belongs in guest surface coordinates, and scaling it is an
++     * upstream fix worth keeping: qemu_input_queue_abs() is told surface_width() as its
++     * range. A relative device delivers counts instead, so scaling those by surface/window
++     * divides every movement as soon as the window is larger than the guest surface, and
++     * the integer division swallows small movements whole. That is the sluggish pointer
++     * under Windows 98, whose desktop is far smaller than the window -- docs/LOG.md [535].
++     */
++    dx = ev->motion.xrel;
++    dy = ev->motion.yrel;
+     if (gui_grab || qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
+         sdl_send_mouse_event(scon, dx, dy, x, y, ev->motion.state);
      }
 +    keep_pointer_in_window(scon, ev);
  }
  
  static void handle_mousebutton(SDL_Event *ev)
-@@ -531,6 +787,14 @@
+@@ -553,6 +816,14 @@
              sdl_grab_start(scon);
          }
      } else {
@@ -693,7 +705,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          if (ev->type == SDL_MOUSEBUTTONDOWN) {
              buttonstate |= SDL_BUTTON(bev->button);
          } else {
-@@ -568,6 +832,35 @@
+@@ -590,6 +861,35 @@
      qemu_input_event_sync();
  }
  
@@ -729,7 +741,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static void handle_windowevent(SDL_Event *ev)
  {
      struct sdl2_console *scon = get_scon_from_window(ev->window.windowID);
-@@ -577,6 +870,12 @@
+@@ -599,6 +899,12 @@
          return;
      }
  
@@ -742,9 +754,9 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      switch (ev->window.event) {
      case SDL_WINDOWEVENT_RESIZED:
          {
-@@ -586,17 +885,21 @@
-             info.height = ev->window.data2;
-             dpy_set_ui_info(scon->dcl.con, &info, true);
+@@ -608,17 +914,21 @@
+             };
+             qemu_console_set_ui_info(scon->dcl.con, &info, true);
          }
 +        grab_resync(scon, "RESIZED");
          sdl2_redraw(scon);
@@ -764,7 +776,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          /* If a new console window opened using a hotkey receives the
           * focus, SDL sends another KEYDOWN event to the new window,
           * closing the console window immediately after.
-@@ -607,8 +910,12 @@
+@@ -629,8 +939,12 @@
          scon->ignore_hotkeys = get_mod_state();
          break;
      case SDL_WINDOWEVENT_FOCUS_LOST:
@@ -778,7 +790,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          }
          break;
      case SDL_WINDOWEVENT_RESTORED:
-@@ -631,8 +938,19 @@
+@@ -653,8 +967,19 @@
              scon->hidden = true;
          }
          break;
@@ -798,7 +810,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          break;
      case SDL_WINDOWEVENT_HIDDEN:
          scon->hidden = true;
-@@ -774,6 +1092,532 @@
+@@ -812,6 +1137,532 @@
      SDL_QuitSubSystem(SDL_INIT_VIDEO);
  }
  
@@ -1303,7 +1315,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +        }
 +        else
 +            memcpy(c->data, data, (width * height * sizeof(uint32_t)));
-+        dpy_cursor_define(con, c);
++        qemu_console_set_cursor(con, c);
 +        cursor_unref(c);
 +    }
 +}
@@ -1318,7 +1330,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +        int64_t curr_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
 +        if (!on || (curr_time >= (last_update + GUI_REFRESH_INTERVAL_DEFAULT))) {
 +            last_update = curr_time;
-+            dpy_mouse_set(con, x, y, on);
++            qemu_console_set_mouse(con, x, y, on);
 +        }
 +    }
 +}
@@ -1331,7 +1343,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static const DisplayChangeListenerOps dcl_2d_ops = {
      .dpy_name             = "sdl2-2d",
      .dpy_gfx_update       = sdl2_2d_update,
-@@ -834,6 +1678,10 @@
+@@ -908,6 +1759,10 @@
  
      assert(o->type == DISPLAY_TYPE_SDL);
  
@@ -1342,7 +1354,24 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      if (SDL_GetHintBoolean("QEMU_ENABLE_SDL_LOGGING", SDL_FALSE)) {
          SDL_LogSetAllPriority(SDL_LOG_PRIORITY_VERBOSE);
      }
-@@ -926,6 +1774,7 @@
+@@ -925,7 +1780,15 @@
+     SDL_SetHint(SDL_HINT_ALLOW_ALT_TAB_WHILE_GRABBED, "0");
+ #endif
+     SDL_SetHint(SDL_HINT_WINDOWS_NO_CLOSE_ON_ALT_F4, "1");
+-    sdl2_set_hint_x11_force_egl();
++    /* Only the gl=on path needs EGL, and it needs it for dma-buf scanout. With gl=off --
++     * the display qemu-3dfx runs on -- the guest's GL context is a GLX context on this
++     * very SDL window, created from an FBConfig of our own in hw/mesa/mglcntx_linux.c.
++     * Forcing SDL onto EGL leaves the window with an EGL visual that no GLX context
++     * matches, and glXMakeContextCurrent() fails with GLXBadDrawable: every GL guest dies
++     * the moment it presents. Measured in docs/LOG.md [532] and confirmed with three games.
++     */
++    if (display_opengl)
++        sdl2_set_hint_x11_force_egl();
+     SDL_EnableScreenSaver();
+     memset(&info, 0, sizeof(info));
+     SDL_VERSION(&info.version);
+@@ -1002,6 +1865,7 @@
      g_free(dir);
      if (icon) {
          SDL_SetWindowIcon(sdl2_console[0].real_window, icon);

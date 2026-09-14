@@ -111,6 +111,7 @@ static void vtxarry_init_guest(vtxarry_t *varry, int size, int type, int stride,
         ptr = (void *)(uintptr_t)handle;
 
     vtxarry_init(varry, size, type, stride, ptr, room);
+    varry->client = (s->arrayBuf == 0);
 }
 
 /* Copy one array slice into the vertex cache. The guest picks both stride and start, so the
@@ -134,22 +135,6 @@ static int vtxarry_push(const vtxarry_t *varry, int cbElem, int start, int len, 
 
     memcpy((uint8_t *)varry->ptr + destOffset, src, len);
     return 0;
-}
-
-static void vtxarry_ptr_reset(MesaPTState *s)
-{
-    s->Color.ptr = 0;
-    s->EdgeFlag.ptr = 0;
-    s->Index.ptr = 0;
-    s->Normal.ptr = 0;
-    for (int i = 0; i < MAX_TEXUNIT; i++)
-        s->TexCoord[i].ptr = 0;
-    s->Vertex.ptr = 0;
-    s->SecondaryColor.ptr = 0;
-    s->FogCoord.ptr = 0;
-    s->Weight.ptr = 0;
-    s->GenAttrib[0].ptr = 0;
-    s->GenAttrib[1].ptr = 0;
 }
 
 static void vtxarry_state(MesaPTState *s, uint32_t arry, int st)
@@ -253,7 +238,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
         s->Interleaved.enable = 0;
     }
     else {
-        if (s->Color.enable && s->Color.ptr) {
+        if (s->Color.enable && s->Color.ptr && s->Color.client) {
             cbElem = (s->Color.stride)? s->Color.stride:szgldata(s->Color.size,s->Color.type);
             n = cbElem*(end - start) + szgldata(s->Color.size,s->Color.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
@@ -263,7 +248,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             if (ovfl)
                 DPRINTF(" *WARN* Color Array overflowed, cbElem %04x maxElem %04x", cbElem, s->elemMax);
         }
-        if (s->EdgeFlag.enable && s->EdgeFlag.ptr) {
+        if (s->EdgeFlag.enable && s->EdgeFlag.ptr && s->EdgeFlag.client) {
             cbElem = (s->EdgeFlag.stride)? s->EdgeFlag.stride:szgldata(s->EdgeFlag.size,s->EdgeFlag.type);
             n = cbElem*(end - start) + szgldata(s->EdgeFlag.size,s->EdgeFlag.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
@@ -273,7 +258,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             if (ovfl)
                 DPRINTF(" *WARN* EdgeFlag Array overflowed, cbElem %04x maxElem %04x", cbElem, s->elemMax);
         }
-        if (s->Index.enable && s->Index.ptr) {
+        if (s->Index.enable && s->Index.ptr && s->Index.client) {
             cbElem = (s->Index.stride)? s->Index.stride:szgldata(s->Index.size,s->Index.type);
             n = cbElem*(end - start) + szgldata(s->Index.size,s->Index.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
@@ -283,7 +268,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             if (ovfl)
                 DPRINTF(" *WARN* Index Array overflowed, cbElem %04x maxElem %04x", cbElem, s->elemMax);
         }
-        if (s->Normal.enable && s->Normal.ptr) {
+        if (s->Normal.enable && s->Normal.ptr && s->Normal.client) {
             cbElem = (s->Normal.stride)? s->Normal.stride:szgldata(s->Normal.size,s->Normal.type);
             n = cbElem*(end - start) + szgldata(s->Normal.size,s->Normal.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
@@ -294,7 +279,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
                 DPRINTF(" *WARN* Normal Array overflowed, cbElem %04x maxElem %04x", cbElem, s->elemMax);
         }
         for (i = 0; i < MAX_TEXUNIT; i++) {
-            if (s->TexCoord[i].enable && s->TexCoord[i].ptr) {
+            if (s->TexCoord[i].enable && s->TexCoord[i].ptr && s->TexCoord[i].client) {
                 cbElem = (s->TexCoord[i].stride)? s->TexCoord[i].stride:szgldata(s->TexCoord[i].size,s->TexCoord[i].type);
                 n = cbElem*(end - start) + szgldata(s->TexCoord[i].size,s->TexCoord[i].type);
                 n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
@@ -305,7 +290,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
                     DPRINTF(" *WARN* TexCoord%d Array overflowed, cbElem %04x maxElem %04x", i, cbElem, s->elemMax);
             }
         }
-        if (s->Vertex.enable && s->Vertex.ptr) {
+        if (s->Vertex.enable && s->Vertex.ptr && s->Vertex.client) {
             cbElem = (s->Vertex.stride)? s->Vertex.stride:szgldata(s->Vertex.size,s->Vertex.type);
             n = cbElem*(end - start) + szgldata(s->Vertex.size,s->Vertex.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
@@ -315,7 +300,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             if (ovfl)
                 DPRINTF(" *WARN* Vertex Array overflowed, cbElem %04x maxElem %04x", cbElem, s->elemMax);
         }
-        if (s->SecondaryColor.enable && s->SecondaryColor.ptr) {
+        if (s->SecondaryColor.enable && s->SecondaryColor.ptr && s->SecondaryColor.client) {
             cbElem = (s->SecondaryColor.stride)? s->SecondaryColor.stride:szgldata(s->SecondaryColor.size,s->SecondaryColor.type);
             n = cbElem*(end - start) + szgldata(s->SecondaryColor.size,s->SecondaryColor.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
@@ -325,7 +310,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             if (ovfl)
                 DPRINTF(" *WARN* SecondaryColor Array overflowed, cbElem %04x maxElem %04x", cbElem, s->elemMax);
         }
-        if (s->FogCoord.enable && s->FogCoord.ptr) {
+        if (s->FogCoord.enable && s->FogCoord.ptr && s->FogCoord.client) {
             cbElem = (s->FogCoord.stride)? s->FogCoord.stride:szgldata(s->FogCoord.size,s->FogCoord.type);
             n = cbElem*(end - start) + szgldata(s->FogCoord.size,s->FogCoord.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
@@ -335,7 +320,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             if (ovfl)
                 DPRINTF(" *WARN* FogCoord Array overflowed, cbElem %04x maxElem %04x", cbElem, s->elemMax);
         }
-        if (s->Weight.enable && s->Weight.ptr) {
+        if (s->Weight.enable && s->Weight.ptr && s->Weight.client) {
             cbElem = (s->Weight.stride)? s->Weight.stride:szgldata(s->Weight.size,s->Weight.type);
             n = cbElem*(end - start) + szgldata(s->Weight.size,s->Weight.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
@@ -346,7 +331,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
                 DPRINTF(" *WARN* Weight Array overflowed, cbElem %04x maxElem %04x", cbElem, s->elemMax);
         }
         for (i = 0; i < 2; i++) {
-            if (s->GenAttrib[i].enable && s->GenAttrib[i].ptr) {
+            if (s->GenAttrib[i].enable && s->GenAttrib[i].ptr && s->GenAttrib[i].client) {
                 cbElem = (s->GenAttrib[i].stride)? s->GenAttrib[i].stride:szgldata(s->GenAttrib[i].size,s->GenAttrib[i].type);
                 n = cbElem*(end - start) + szgldata(s->GenAttrib[i].size,s->GenAttrib[i].type);
                 n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
@@ -999,7 +984,7 @@ static void processArgs(MesaPTState *s)
             break;
         case FEnum_glDrawArrays:
         case FEnum_glDrawArraysEXT:
-            if (s->arg[2] && (s->arrayBuf == 0)) {
+            if (s->arg[2] && (s->vao == 0)) {
                 s->elemMax = ((s->arg[1] + s->arg[2] - 1) > s->elemMax)? (s->arg[1] + s->arg[2] - 1):s->elemMax;
                 PushVertexArray(s, s->hshm, s->arg[1], s->arg[1] + s->arg[2] - 1);
             }
@@ -1050,7 +1035,7 @@ static void processArgs(MesaPTState *s)
                 }
                 //DPRINTF("DrawElements() %04x %04x", start, end);
                 s->elemMax = (end > s->elemMax)? end:s->elemMax;
-                if (s->arrayBuf == 0)
+                if (s->vao == 0)
                     PushVertexArray(s, PTR(s->hshm, s->datacb), start, end);
             }
             break;
@@ -1093,7 +1078,7 @@ static void processArgs(MesaPTState *s)
                 }
                 base = (s->FEnum == FEnum_glDrawElementsBaseVertex)? s->arg[4]:s->arg[5];
                 s->elemMax = ((end + base) > s->elemMax)? (end + base):s->elemMax;
-                if (s->arrayBuf == 0)
+                if (s->vao == 0)
                     PushVertexArray(s, PTR(s->hshm, s->datacb), (start + base), (end + base));
             }
             break;
@@ -1114,7 +1099,7 @@ static void processArgs(MesaPTState *s)
                 s->datacb = ALIGNED(s->arg[3] * szgldata(0, s->arg[4]));
                 s->parg[1] = VAL(s->hshm);
                 s->elemMax = (s->arg[2] > s->elemMax)? s->arg[2]:s->elemMax;
-                if (s->arrayBuf == 0)
+                if (s->vao == 0)
                     PushVertexArray(s, PTR(s->hshm, s->datacb), s->arg[1], s->arg[2]);
             }
             break;
@@ -1125,7 +1110,7 @@ static void processArgs(MesaPTState *s)
                 s->parg[1] = VAL(s->hshm);
                 int base = s->arg[6];
                 s->elemMax = ((s->arg[2] + base)> s->elemMax)? (s->arg[2] + base):s->elemMax;
-                if (s->arrayBuf == 0)
+                if (s->vao == 0)
                     PushVertexArray(s, PTR(s->hshm, s->datacb), (s->arg[1] + base), (s->arg[2] + base));
             }
             break;
@@ -1973,8 +1958,6 @@ static void processFRet(MesaPTState *s)
             s->arrayBuf = (s->arg[0] == GL_ARRAY_BUFFER)? s->arg[1]:s->arrayBuf;
             s->elemArryBuf = (s->arg[0] == GL_ELEMENT_ARRAY_BUFFER)? s->arg[1]:s->elemArryBuf;
             s->BufIdx = s->arg[1];
-            if ((s->vao == 0) && (s->arg[0] == GL_ARRAY_BUFFER) && (s->arg[1] == 0))
-                vtxarry_ptr_reset(s);
             if (s->vao) {
                 s->arrayBuf = s->vao;
                 s->elemArryBuf = s->vao;
@@ -1986,8 +1969,6 @@ static void processFRet(MesaPTState *s)
                 s->pixPackBuf = (((uint32_t *)s->hshm)[i] == s->pixPackBuf)? 0:s->pixPackBuf;
                 s->pixUnpackBuf = (((uint32_t *)s->hshm)[i] == s->pixUnpackBuf)? 0:s->pixUnpackBuf;
                 s->queryBuf = (((uint32_t *)s->hshm)[i] == s->queryBuf)? 0:s->queryBuf;
-                if ((s->vao == 0) && s->arrayBuf && (((uint32_t *)s->hshm)[i] == s->arrayBuf))
-                    vtxarry_ptr_reset(s);
                 s->arrayBuf = (((uint32_t *)s->hshm)[i] == s->arrayBuf)? 0:s->arrayBuf;
                 s->elemArryBuf = (((uint32_t *)s->hshm)[i] == s->elemArryBuf)? 0:s->elemArryBuf;
             }
@@ -2354,6 +2335,7 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
     const uint32_t fifo_calls_before_write = fifo_calls_run;
 
     FLIGHT_RECORD(FLIGHT_LEVEL_TRAPS, FLIGHT_TRAP_WRITE, addr, val);
+    MGLRestoreCurrent();
 
     if (addr == 0xFBC) {
         switch (val) {
@@ -2377,6 +2359,7 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                 if (s->MesaVer) {
                     MGLWndRelease();
                     DPRINTF("%-64s", "DLL unloaded");
+                    DPRINTF("GL context restored %u times since start", MGLRestoreCount());
                 }
                 FiniMesaGL();
                 flight_flush_after_write = true;

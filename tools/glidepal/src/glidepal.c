@@ -166,10 +166,10 @@ enum {
 };
 
 static const char *panel_name[PANEL_COUNT] = {
-    "1 Chroma-Key an,  keine Mischung  (der Fall von Diablo II)",
-    "2 Chroma-Key aus, keine Mischung  (Gegenprobe: muss schwarz sein)",
-    "3 Chroma-Key an,  Mischung an, Alpha interpoliert",
-    "4 Chroma-Key an,  Mischung an, Alpha aus der Textur"
+    "1 chroma key on,  no blending     (the Diablo II case)",
+    "2 chroma key off, no blending     (counter-check: has to be black)",
+    "3 chroma key on,  blending on, alpha interpolated",
+    "4 chroma key on,  blending on, alpha from the texture"
 };
 
 static void set_panel_state(int panel)
@@ -248,12 +248,12 @@ int main(int argc, char **argv)
         }
     }
 
-    printf("glidepal -- palettierte Textur und Chroma-Key ueber Glide\n");
+    printf("glidepal -- palettised texture and chroma key through Glide\n");
     for (panel = 0; panel < PANEL_COUNT; panel++) {
-        printf("  Feld %s\n", panel_name[panel]);
+        printf("  Panel %s\n", panel_name[panel]);
     }
-    printf("Erwartet: Feld 1, 3 und 4 zeigen den orangenen Grund durch,\n");
-    printf("          nur Feld 2 zeigt einen schwarzen Kasten.\n");
+    printf("Expected: panels 1, 3 and 4 let the orange ground show through,\n");
+    printf("          only panel 2 shows a black box.\n");
     fflush(stdout);
 
     build_texture();
@@ -263,7 +263,7 @@ int main(int argc, char **argv)
 
     memset(&hw, 0, sizeof(hw));
     if (!grSstQueryHardware(&hw)) {
-        printf("FEHLER: grSstQueryHardware meldet keine Hardware.\n");
+        printf("ERROR: grSstQueryHardware reports no hardware.\n");
         grGlideShutdown();
         return 1;
     }
@@ -271,7 +271,7 @@ int main(int argc, char **argv)
 
     if (!grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1)) {
-        printf("FEHLER: grSstWinOpen gescheitert.\n");
+        printf("ERROR: grSstWinOpen failed.\n");
         grGlideShutdown();
         return 1;
     }
@@ -302,7 +302,7 @@ int main(int argc, char **argv)
     grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, palette);
     grTexSource(GR_TMU0, texture_address, GR_MIPMAPLEVELMASK_BOTH, &texture_info);
 
-    printf("Textur %dx%d als GR_TEXFMT_P_8 auf Adresse %lu geladen.\n",
+    printf("Texture %dx%d loaded as GR_TEXFMT_P_8 at address %lu.\n",
            TEXTURE_SIZE, TEXTURE_SIZE, (unsigned long)texture_address);
     fflush(stdout);
 
@@ -321,7 +321,7 @@ int main(int argc, char **argv)
         }
     }
 
-    printf("%ld Bilder gezeichnet.\n", frames);
+    printf("%ld frames drawn.\n", frames);
     fflush(stdout);
 
     grSstWinClose();

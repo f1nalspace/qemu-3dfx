@@ -43,6 +43,8 @@ int DrawableContext(void);
 void MGLFuncHandler(const char *);
 void MGLDeleteContext(int);
 int MGLCreateContext(uint32_t);
+void MGLRestoreCurrent(void);
+uint32_t MGLRestoreCount(void);
 
 int glwnd_ready(void);
 void deactivateCancel(void);
