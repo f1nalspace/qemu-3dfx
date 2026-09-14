@@ -38,6 +38,8 @@ void MesaContextAttest(const char *div, int *out)
 /* Compatibility-profile calls, so glcorearb.h has neither the prototypes nor the bit. */
 typedef void (APIENTRYP PFNGLPUSHCLIENTATTRIBCOMPATPROC)(GLbitfield mask);
 typedef void (APIENTRYP PFNGLPOPCLIENTATTRIBCOMPATPROC)(void);
+typedef void (APIENTRYP PFNGLCLIENTACTIVETEXTURECOMPATPROC)(GLenum texture);
+typedef void (APIENTRYP PFNGLDISABLECLIENTSTATECOMPATPROC)(GLenum array);
 #define GL_CLIENT_VERTEX_ARRAY_BIT_COMPAT 0x00000002
 
 static struct {
@@ -860,3 +862,47 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
                 windowed_guest, acted, box);
 }
 
+
+/* A context the guest wrapper takes as new has every client array off and no array buffers bound. When the host keeps using ctx[0] for it,
+ * the GL state of that context still holds whatever the previous guest context left, so it is brought to that starting point here.
+ */
+#define RESET_CLIENT_ARRAYS_ERROR_DRAIN_LIMIT 16
+void MesaResetClientArrays(void)
+{
+    MESA_PFN(PFNGLBINDBUFFERPROC,                glBindBuffer);
+    MESA_PFN(PFNGLCLIENTACTIVETEXTURECOMPATPROC, glClientActiveTexture);
+    MESA_PFN(PFNGLDISABLECLIENTSTATECOMPATPROC,  glDisableClientState);
+    MESA_PFN(PFNGLDISABLEVERTEXATTRIBARRAYPROC,  glDisableVertexAttribArray);
+    MESA_PFN(PFNGLGETERRORPROC,                  glGetError);
+    MESA_PFN(PFNGLGETINTEGERVPROC,               glGetIntegerv);
+    MESA_PFN(PFNGLVERTEXATTRIBDIVISORPROC,       glVertexAttribDivisor);
+
+    static const GLenum named_arrays[] = {
+        GL_VERTEX_ARRAY, GL_NORMAL_ARRAY, GL_COLOR_ARRAY, GL_INDEX_ARRAY,
+        GL_EDGE_FLAG_ARRAY, GL_SECONDARY_COLOR_ARRAY, GL_FOG_COORDINATE_ARRAY,
+    };
+    GLint attribute_count = 0, texture_coord_count = 0;
+
+    PFN_CALL(glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &attribute_count));
+    PFN_CALL(glGetIntegerv(GL_MAX_TEXTURE_COORDS, &texture_coord_count));
+    for (int attribute = 0; attribute < attribute_count; attribute++) {
+        PFN_CALL(glDisableVertexAttribArray(attribute));
+        if (p_glVertexAttribDivisor)
+            PFN_CALL(glVertexAttribDivisor(attribute, 0));
+    }
+    for (int i = 0; i < ARRAY_SIZE(named_arrays); i++)
+        PFN_CALL(glDisableClientState(named_arrays[i]));
+    for (int unit = 0; unit < texture_coord_count; unit++) {
+        PFN_CALL(glClientActiveTexture(GL_TEXTURE0 + unit));
+        PFN_CALL(glDisableClientState(GL_TEXTURE_COORD_ARRAY));
+    }
+    PFN_CALL(glClientActiveTexture(GL_TEXTURE0));
+    PFN_CALL(glBindBuffer(GL_ARRAY_BUFFER, 0));
+    PFN_CALL(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
+    /* An array this driver does not know must not surface as an error of the guest's next call. */
+    for (int drained = 0; drained < RESET_CLIENT_ARRAYS_ERROR_DRAIN_LIMIT; drained++) {
+        const GLenum error = PFN_CALL(glGetError());
+        if (error == GL_NO_ERROR)
+            break;
+    }
+}

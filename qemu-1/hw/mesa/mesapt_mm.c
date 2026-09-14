@@ -60,6 +60,8 @@ typedef struct MesaPTState
     uint32_t reg[4];
     uintptr_t parg[4];
     int mglContext, mglCntxCurrent, mglCntxAtt, mglCntxWGL;
+    /* Set when the client state tracking was reset: the next make-current turns the client arrays of the GL context off to match. */
+    int clientArraysResetPending;
     uint32_t MesaVer;
     uint32_t procRet;
     int pixfmt, pixfmtMax;
@@ -2325,6 +2327,7 @@ static void ContextCreateCommon(MesaPTState *s)
     InitBufObj();
     InitSyncObj();
     InitClientStates(s);
+    s->clientArraysResetPending = 1;
     ImplMesaGLReset();
 }
 
@@ -2405,10 +2408,13 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                         DPRINTF("wglCreateContext cntx %d curr %d", s->mglContext, s->mglCntxCurrent);
                         s->mglContext = MGLCreateContext(cntxRC[0])? 0:((s->mglCntxAtt)? 0:1);
                         ContextCreateCommon(s);
+                        /* The guest wrapper resets its client state tracking only on this answer. */
+                        cntxRC[1] = 1;
                     }
                     else {
                         //DPRINTF("wglCreateContext cntx %d curr %d %x", s->mglContext, s->mglCntxCurrent, cntxRC[0]);
                         MGLCreateContext(cntxRC[0]);
+                        cntxRC[1] = 0;
                     }
                 } while(0);
                 break;
@@ -2422,6 +2428,11 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                         DPRINTF("wglMakeCurrent cntx %d curr %d lvl %d", s->mglContext, s->mglCntxCurrent, level);
                         DPRINTF("%sWRAPGL32", (char *)&ptVer[1]);
                         s->mglCntxCurrent = MGLMakeCurrent(ptVer[0], level)? 0:1;
+                        if (s->mglCntxCurrent && s->clientArraysResetPending) {
+                            /* ctx[0] may be the one the guest had before, still holding its client arrays. */
+                            MesaResetClientArrays();
+                            s->clientArraysResetPending = 0;
+                        }
                         s->extnYear = GetGLExtYear();
                         s->extnLength = GetGLExtLength();
                         s->szVertCache = GetVertCacheMB() << 19;
@@ -2440,6 +2451,11 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                         DPRINTF("MappedBufferObject %s-copy", MGLUpdateGuestBufo(0, 0)? "Zero":"One");
                         DPRINTF("Guest GL Extensions pass-through for Year %s Length %s",
                                 (s->extnYear)? xYear:"ALL", (s->extnLength)? xLen:"ANY");
+                        /* A context created without deleting the previous one comes through here again, with that one's timer still set. */
+                        if (s->dispTimer) {
+                            timer_del(s->dispTimer);
+                            timer_free(s->dispTimer);
+                        }
                         s->dispTimer = (disptmr)? timer_new_ms(QEMU_CLOCK_VIRTUAL, dispTimerProc, s):0;
                         dispTimerSched(s->dispTimer, &s->crashRC);
                     }
