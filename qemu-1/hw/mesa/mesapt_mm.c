@@ -2335,6 +2335,7 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
     const uint32_t fifo_calls_before_write = fifo_calls_run;
 
     FLIGHT_RECORD(FLIGHT_LEVEL_TRAPS, FLIGHT_TRAP_WRITE, addr, val);
+    MGLRestoreCurrent();
 
     if (addr == 0xFBC) {
         switch (val) {
@@ -2358,6 +2359,7 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                 if (s->MesaVer) {
                     MGLWndRelease();
                     DPRINTF("%-64s", "DLL unloaded");
+                    DPRINTF("GL context restored %u times since start", MGLRestoreCount());
                 }
                 FiniMesaGL();
                 flight_flush_after_write = true;

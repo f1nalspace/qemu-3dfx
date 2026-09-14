@@ -765,6 +765,10 @@ void MGLFuncHandler(const char *name)
     argsp[0] = 0;
 }
 
+/* Only the GLX backend takes its context back from another pass-through on the same thread. */
+void MGLRestoreCurrent(void) { }
+uint32_t MGLRestoreCount(void) { return 0; }
+
 #endif //CONFIG_WIN32
 
 int CompareAttribArray(const int *attrib)

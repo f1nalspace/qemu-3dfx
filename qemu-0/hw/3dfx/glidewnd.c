@@ -77,6 +77,8 @@ static void *hwnd;
  */
 static int current_glide_res = -1;
 static int scaled_to_fullscreen = -1, scaled_to_width, scaled_to_height;
+static void glide_context_remember(void);
+static void glide_context_forget(void);
 
 
 #ifdef CONFIG_DARWIN
@@ -216,10 +218,13 @@ int stat_window(const int res, void *opaque)
 		DPRINTF("    %s %ux%u %s", (glide_fullscreen)? "fullscreen":"window",
                     (wndStat & 0xFFFFU), (wndStat >> 0x10), (cfg_scaleX)? "(scaled)":"");
 		stat = 0;
+		glide_context_remember();
 	    }
 	}
-	else
+	else {
+	    glide_context_forget();
 	    stat = wndStat;
+	}
     }
     return stat;
 }
@@ -227,6 +232,7 @@ int stat_window(const int res, void *opaque)
 void fini_window(void *opaque)
 {
     window_cb *disp_cb = opaque;
+    glide_context_forget();
     disp_cb->activate = 0;
 #ifdef CONFIG_WIN32
     if (cfg_createWnd)
@@ -455,3 +461,52 @@ void glidestat(PPERFSTAT s)
     s->last = &profile_last;
 }
 
+/* Glide and the GL pass-through share the vCPU thread. A guest that uses both at once -- Descent 3 over
+ * Glide with a DirectDraw that is WineD3D -- switches the thread's GL context behind OpenGLide's back.
+ * Take it back before every Glide call -- docs/LOG.md [715].
+ */
+static unsigned int glide_context_restores;
+
+#ifdef CONFIG_LINUX
+#include <GL/glx.h>
+
+static Display *glide_context_display;
+static GLXDrawable glide_context_draw, glide_context_read;
+static GLXContext glide_context;
+
+static void glide_context_remember(void)
+{
+    glide_context = glXGetCurrentContext();
+    glide_context_display = glXGetCurrentDisplay();
+    glide_context_draw = glXGetCurrentDrawable();
+    glide_context_read = glXGetCurrentReadDrawable();
+}
+
+static void glide_context_forget(void)
+{
+    glide_context = NULL;
+    glide_context_display = NULL;
+    glide_context_draw = None;
+    glide_context_read = None;
+}
+
+void glide_context_restore(void)
+{
+    if (!glide_context)
+        return;
+    const GLXContext thread_context = glXGetCurrentContext();
+    if (thread_context == glide_context)
+        return;
+    glXMakeContextCurrent(glide_context_display, glide_context_draw, glide_context_read, glide_context);
+    glide_context_restores++;
+}
+#else
+static void glide_context_remember(void) { }
+static void glide_context_forget(void) { }
+void glide_context_restore(void) { }
+#endif
+
+unsigned int glide_context_restore_count(void)
+{
+    return glide_context_restores;
+}

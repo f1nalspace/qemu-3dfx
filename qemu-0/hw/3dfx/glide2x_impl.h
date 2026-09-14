@@ -134,6 +134,8 @@ void doGlideFunc(int, uint32_t *, uintptr_t *, uintptr_t *, int);
 void conf_glide2x(const uint32_t, const int, const int, const int);
 void conf_glide2x_window(const int, const int, const int, const int);
 void glide_window_rescale(void);
+void glide_context_restore(void);
+unsigned int glide_context_restore_count(void);
 void cwnd_glide2x(void *, void *, void *);
 int init_glide2x(const char *);
 void fini_glide2x(void);
