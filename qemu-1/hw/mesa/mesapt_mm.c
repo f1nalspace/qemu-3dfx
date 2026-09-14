@@ -139,10 +139,109 @@ static int vtxarry_push(const vtxarry_t *varry, int cbElem, int start, int len, 
     return 0;
 }
 
+/* QEMU_3DFX_FIFO_CHECK=1: the first leaks in the FIFO data stream print the client array state, which call last
+ * switched each array and what the last draw copied -- to find the array guest and host disagree on.
+ */
+#define FIFO_CHECK_DUMP_LIMIT 3
+#define FIFO_CHECK_PUSH_SLOTS 32
+#define FIFO_CHECK_STATE_SLOTS 32
+#define FIFO_CHECK_TEXTURE_UNIT_SHIFT 24
+#define FIFO_CHECK_GENERIC_ATTRIB6 0x06
+#define FIFO_CHECK_GENERIC_ATTRIB7 0x07
+#define FIFO_CHECK_NO_INDEX (-1)
+
+typedef struct {
+    const char *arrayName;
+    int arrayIndex;
+    int bytesPerElement;
+    int firstElement;
+    int lastElement;
+    int wordsCopied;
+} FifoCheckPush;
+
+typedef struct {
+    uint32_t arrayKey;
+    int switchingFEnum;
+    int enabled;
+    uint32_t switchCount;
+} FifoCheckStateChange;
+
+static FifoCheckPush fifoCheckPushes[FIFO_CHECK_PUSH_SLOTS];
+static int fifoCheckPushCount;
+static int fifoCheckPushFEnum;
+static FifoCheckStateChange fifoCheckStateChanges[FIFO_CHECK_STATE_SLOTS];
+static int fifoCheckStateChangeCount;
+
+static int fifo_check_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled == -1) {
+        const char *setting = getenv("QEMU_3DFX_FIFO_CHECK");
+        enabled = (setting && setting[0] != '0')? 1:0;
+    }
+    return enabled;
+}
+
+static int fifo_check_is_client_array(uint32_t arry)
+{
+    switch (arry) {
+        case GL_COLOR_ARRAY:
+        case GL_EDGE_FLAG_ARRAY:
+        case GL_INDEX_ARRAY:
+        case GL_NORMAL_ARRAY:
+        case GL_TEXTURE_COORD_ARRAY:
+        case GL_VERTEX_ARRAY:
+        case GL_SECONDARY_COLOR_ARRAY:
+        case GL_FOG_COORDINATE_ARRAY:
+        case GL_WEIGHT_ARRAY_ARB:
+        case FIFO_CHECK_GENERIC_ATTRIB6:
+        case FIFO_CHECK_GENERIC_ATTRIB7:
+            return 1;
+    }
+    return 0;
+}
+
+static void fifo_check_note_state(MesaPTState *s, uint32_t arry, int st)
+{
+    if (!fifo_check_enabled() || !fifo_check_is_client_array(arry))
+        return;
+    const uint32_t textureUnitKey = (arry == GL_TEXTURE_COORD_ARRAY)? ((uint32_t)s->texUnit << FIFO_CHECK_TEXTURE_UNIT_SHIFT):0;
+    const uint32_t arrayKey = arry | textureUnitKey;
+    int slot;
+    for (slot = 0; slot < fifoCheckStateChangeCount; slot++) {
+        if (fifoCheckStateChanges[slot].arrayKey == arrayKey)
+            break;
+    }
+    if (slot == fifoCheckStateChangeCount) {
+        if (fifoCheckStateChangeCount >= FIFO_CHECK_STATE_SLOTS)
+            return;
+        fifoCheckStateChangeCount++;
+    }
+    FifoCheckStateChange *change = &fifoCheckStateChanges[slot];
+    change->arrayKey = arrayKey;
+    change->switchingFEnum = s->FEnum;
+    change->enabled = st;
+    change->switchCount++;
+}
+
+static void fifo_check_note_push(const char *arrayName, int arrayIndex, int bytesPerElement, int firstElement, int lastElement, int wordsBeforePadding)
+{
+    if (!fifo_check_enabled() || (fifoCheckPushCount >= FIFO_CHECK_PUSH_SLOTS))
+        return;
+    FifoCheckPush *push = &fifoCheckPushes[fifoCheckPushCount++];
+    push->arrayName = arrayName;
+    push->arrayIndex = arrayIndex;
+    push->bytesPerElement = bytesPerElement;
+    push->firstElement = firstElement;
+    push->lastElement = lastElement;
+    push->wordsCopied = (wordsBeforePadding & 0x01)? (wordsBeforePadding + 1):wordsBeforePadding;
+}
+
 static void vtxarry_state(MesaPTState *s, uint32_t arry, int st)
 {
 #define GENERIC_ATTRIB6 0x06
 #define GENERIC_ATTRIB7 0x07
+    fifo_check_note_state(s, arry, st);
     switch (arry) {
         case GL_COLOR_ARRAY:
             s->Color.enable = st;
@@ -228,11 +327,14 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
 {
     uint8_t *varry_ptr = (uint8_t *)pshm;
     int i, cbElem, n, ovfl;
+    fifoCheckPushCount = 0;
+    fifoCheckPushFEnum = s->FEnum;
     if (s->Interleaved.enable && s->Interleaved.ptr) {
         cbElem = (s->Interleaved.stride)? s->Interleaved.stride:s->Interleaved.size;
         n = (cbElem*(end - start) + s->Interleaved.size);
         n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
         ovfl = vtxarry_push(&s->Interleaved, cbElem, start, (n << 2), varry_ptr);
+        fifo_check_note_push("Interleaved", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
         varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
         s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
         if (ovfl)
@@ -245,6 +347,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->Color.size,s->Color.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->Color, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("Color", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -255,6 +358,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->EdgeFlag.size,s->EdgeFlag.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->EdgeFlag, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("EdgeFlag", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -265,6 +369,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->Index.size,s->Index.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->Index, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("Index", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -275,6 +380,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->Normal.size,s->Normal.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->Normal, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("Normal", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -286,6 +392,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
                 n = cbElem*(end - start) + szgldata(s->TexCoord[i].size,s->TexCoord[i].type);
                 n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
                 ovfl = vtxarry_push(&s->TexCoord[i], cbElem, start, (n << 2), varry_ptr);
+                fifo_check_note_push("TexCoord", i, cbElem, start, end, n);
                 varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
                 s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
                 if (ovfl)
@@ -297,6 +404,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->Vertex.size,s->Vertex.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->Vertex, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("Vertex", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -307,6 +415,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->SecondaryColor.size,s->SecondaryColor.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->SecondaryColor, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("SecondaryColor", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -317,6 +426,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->FogCoord.size,s->FogCoord.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->FogCoord, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("FogCoord", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -327,6 +437,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->Weight.size,s->Weight.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->Weight, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("Weight", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -338,6 +449,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
                 n = cbElem*(end - start) + szgldata(s->GenAttrib[i].size,s->GenAttrib[i].type);
                 n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
                 ovfl = vtxarry_push(&s->GenAttrib[i], cbElem, start, (n << 2), varry_ptr);
+                fifo_check_note_push("GenAttrib", i, cbElem, start, end, n);
                 varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
                 s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
                 if (ovfl)
@@ -346,6 +458,49 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
         }
     }
 }
+static void fifo_check_print_array(const char *arrayName, int arrayIndex, const vtxarry_t *varry)
+{
+    const int hasPointer = (varry->ptr != NULL)? 1:0;
+    fprintf(stderr, "qemu-3dfx fifo check:   %-14s %2d  enable %d ptr %d client %d size %04x type %04x stride %d\n",
+            arrayName, arrayIndex, varry->enable, hasPointer, varry->client, varry->size, varry->type, varry->stride);
+}
+
+static void fifo_check_dump(MesaPTState *s, uint32_t dataCounter)
+{
+    static int dumpsPrinted;
+    if (!fifo_check_enabled() || (dumpsPrinted >= FIFO_CHECK_DUMP_LIMIT))
+        return;
+    dumpsPrinted++;
+    fprintf(stderr, "qemu-3dfx fifo check: leak %d at FEnum 0x%03x, data counter %08x, arrayBuf %d elemArryBuf %d vao %d texUnit %d\n",
+            dumpsPrinted, s->FEnum, dataCounter, s->arrayBuf, s->elemArryBuf, s->vao, s->texUnit);
+    fifo_check_print_array("Interleaved", FIFO_CHECK_NO_INDEX, &s->Interleaved);
+    fifo_check_print_array("Color", FIFO_CHECK_NO_INDEX, &s->Color);
+    fifo_check_print_array("EdgeFlag", FIFO_CHECK_NO_INDEX, &s->EdgeFlag);
+    fifo_check_print_array("Index", FIFO_CHECK_NO_INDEX, &s->Index);
+    fifo_check_print_array("Normal", FIFO_CHECK_NO_INDEX, &s->Normal);
+    for (int unit = 0; unit < MAX_TEXUNIT; unit++)
+        fifo_check_print_array("TexCoord", unit, &s->TexCoord[unit]);
+    fifo_check_print_array("Vertex", FIFO_CHECK_NO_INDEX, &s->Vertex);
+    fifo_check_print_array("SecondaryColor", FIFO_CHECK_NO_INDEX, &s->SecondaryColor);
+    fifo_check_print_array("FogCoord", FIFO_CHECK_NO_INDEX, &s->FogCoord);
+    fifo_check_print_array("Weight", FIFO_CHECK_NO_INDEX, &s->Weight);
+    for (int attribute = 0; attribute < 2; attribute++)
+        fifo_check_print_array("GenAttrib", attribute, &s->GenAttrib[attribute]);
+    fprintf(stderr, "qemu-3dfx fifo check:   last draw FEnum 0x%03x copied %d arrays\n", fifoCheckPushFEnum, fifoCheckPushCount);
+    for (int pushIndex = 0; pushIndex < fifoCheckPushCount; pushIndex++) {
+        const FifoCheckPush *push = &fifoCheckPushes[pushIndex];
+        fprintf(stderr, "qemu-3dfx fifo check:     copied %-14s %2d  bytesPerElement %d elements %d..%d words %d\n",
+                push->arrayName, push->arrayIndex, push->bytesPerElement, push->firstElement, push->lastElement, push->wordsCopied);
+    }
+    for (int slot = 0; slot < fifoCheckStateChangeCount; slot++) {
+        const FifoCheckStateChange *change = &fifoCheckStateChanges[slot];
+        const uint32_t textureUnit = change->arrayKey >> FIFO_CHECK_TEXTURE_UNIT_SHIFT;
+        const uint32_t arrayName = change->arrayKey & ((1U << FIFO_CHECK_TEXTURE_UNIT_SHIFT) - 1);
+        fprintf(stderr, "qemu-3dfx fifo check:   array %04x unit %u last set to %d by FEnum 0x%03x, %u switches\n",
+                arrayName, textureUnit, change->enabled, change->switchingFEnum, change->switchCount);
+    }
+}
+
 static void InitClientStates(MesaPTState *s)
 {
     memset(&s->Color, 0, sizeof(vtxarry_t));
@@ -2382,6 +2537,8 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                 uint32_t numData = (s->datacb & 0x03)? ((s->datacb >> 2) + 1):(s->datacb >> 2);
                 DPRINTF_COND(((dataptr[0] - numData) > (ALIGNED(1) >> 2)),
                     "WARN: FIFO data leak 0x%02x %06x %06x", s->FEnum, dataptr[0], numData);
+                if ((dataptr[0] - numData) > (ALIGNED(1) >> 2))
+                    fifo_check_dump(s, dataptr[0]);
                 dataptr[0] = ALIGNED(1) >> 2;
             } while (0);
         }
