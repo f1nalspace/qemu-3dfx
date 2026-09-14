@@ -672,7 +672,16 @@ int NumPbuffer(void)
 
 int DrawableContext(void)
 {
-    return (ctx[0] == glXGetCurrentContext());
+    /* MGLMakeCurrent() puts every level context on the window, not only ctx[0] -- wined3d draws on a shared one for some titles (Silver). */
+    const GLXContext bound_context = glXGetCurrentContext();
+
+    if (!bound_context)
+        return 0;
+    for (int level = 0; level < MAX_LVLCNTX; level++) {
+        if (ctx[level] == bound_context)
+            return 1;
+    }
+    return 0;
 }
 
 static int PbufferGLBinding(const int target)
