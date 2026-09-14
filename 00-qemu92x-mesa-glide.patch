@@ -798,7 +798,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          break;
      case SDL_WINDOWEVENT_HIDDEN:
          scon->hidden = true;
-@@ -774,6 +1092,511 @@
+@@ -774,6 +1092,532 @@
      SDL_QuitSubSystem(SDL_INIT_VIDEO);
  }
  
@@ -863,6 +863,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    int glide_on_mesa, gui_saved_res, render_pause;
 +    int res, msaa, alpha, dtimer, GLon12;
 +    int gl_takeover_pending;
++    int mesa_on_glide;
 +    void *hnwnd, *opaque;
 +    void (*cwnd_fn)(void *, void *, void *);
 +} scon_cb;
@@ -1108,6 +1109,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    s->scon = &sdl2_console[0];
 +    s->opaque = opaque;
 +    s->cwnd_fn = (void (*)(void *, void *, void *))cwnd_fn;
++    s->mesa_on_glide = 0;
 +    if (s->gui_saved_res) {
 +        s->res = s->gui_saved_res;
 +        s->gui_saved_res = 0;
@@ -1184,6 +1186,9 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +void mesa_renderer_stat(const int activate)
 +{
 +    struct sdl_console_cb *s = &scon_cb;
++    /* The window belongs to the Glide session, GL only borrowed it. */
++    if (s->mesa_on_glide)
++        return;
 +    sdl_renderer_stat(activate, "mesapt");
 +    if (s->glide_on_mesa && !activate)
 +        glide_renderer_stat(1);
@@ -1225,6 +1230,17 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +
 +    sdl_display_valid("mesapt");
 +    s->scon = &sdl2_console[0];
++    /* A Glide session holds the window and presents through it. Preparing the window for GL
++     * would bring the 2D output back on top of Glide and drop its callback -- docs/LOG.md [709].
++     */
++    const int glide_holds_window = (s->opaque && s->gui_saved_res && s->scon->winctx);
++    if (glide_holds_window) {
++        void (*mesa_window_ready)(void *, void *, void *) = (void (*)(void *, void *, void *))cwnd_fn;
++        s->mesa_on_glide = 1;
++        view_diag("mesapt borrows the Glide window", s->scon);
++        mesa_window_ready(s->scon->real_window, s->hnwnd, 0);
++        return;
++    }
 +    s->msaa = msaa;
 +    s->alpha = alpha;
 +#ifdef CONFIG_WIN32
@@ -1253,6 +1269,11 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +
 +    sdl_display_valid("mesapt");
 +    s->scon = &sdl2_console[0];
++    if (s->mesa_on_glide) {
++        /* The Glide session still presents through the window. */
++        s->mesa_on_glide = 0;
++        return;
++    }
 +    s->res = 0;
 +    s->opaque = 0;
 +    s->cwnd_fn = 0;
@@ -1310,7 +1331,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static const DisplayChangeListenerOps dcl_2d_ops = {
      .dpy_name             = "sdl2-2d",
      .dpy_gfx_update       = sdl2_2d_update,
-@@ -834,6 +1657,10 @@
+@@ -834,6 +1678,10 @@
  
      assert(o->type == DISPLAY_TYPE_SDL);
  
@@ -1321,7 +1342,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      if (SDL_GetHintBoolean("QEMU_ENABLE_SDL_LOGGING", SDL_FALSE)) {
          SDL_LogSetAllPriority(SDL_LOG_PRIORITY_VERBOSE);
      }
-@@ -926,6 +1753,7 @@
+@@ -926,6 +1774,7 @@
      g_free(dir);
      if (icon) {
          SDL_SetWindowIcon(sdl2_console[0].real_window, icon);
