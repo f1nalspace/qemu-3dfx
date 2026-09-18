@@ -526,6 +526,210 @@ static void InitClientStates(MesaPTState *s)
     GLExtUncapped(s->mglCntxWGL);
 }
 
+/* Buffer object mapping diagnostics, switched on with QEMU_3DFX_BUFO_DIAG=1.
+ *
+ * MGL_BUFO_TRACE prints a line per mapping, which is far too much for a game: the readback
+ * that costs 6.2 ms of a 10.8 ms frame (docs/LOG.md [799]) happens once per frame and drowns
+ * in the rest. This prints one line per new combination of target, size, access, host and
+ * guest address instead, plus a counting line every few seconds.
+ *
+ * That answers the two questions the mapping has to answer before it can be kept standing
+ * across frames (docs/LOG.md [801], branch D2): which buffer is the expensive one, and does
+ * its host address stay the same from one frame to the next.
+ */
+#define BUFO_DIAG_SLOTS 32
+#define BUFO_DIAG_REPORT_INTERVAL_NS (5000LL * 1000LL * 1000LL)
+#define BUFO_DIAG_NS_PER_SECOND (1000.0 * 1000.0 * 1000.0)
+#define BUFO_DIAG_NS_PER_MILLISECOND (1000.0 * 1000.0)
+
+typedef struct {
+    uint32_t target, mapSize, access;
+    uintptr_t hostAddress, guestAddress;
+    int zeroCopy;
+    unsigned mapCount;
+} BufoDiagEntry;
+
+static BufoDiagEntry bufoDiagEntries[BUFO_DIAG_SLOTS];
+static int bufoDiagEntryCount;
+static int bufoDiagLastEntry = -1;
+static unsigned bufoDiagMapCount, bufoDiagSwitchCount, bufoDiagBeyondSlots;
+static int64_t bufoDiagWindowStartNs;
+
+/* The share of a mapping that is KVM work: how long the memory region takes to go up and to
+ * come down again. The rest of glMapBuffer and glUnmapBuffer is the GL driver's own -- waiting
+ * for the download into the buffer, and pushing its contents back to the card. Only the KVM
+ * share can be taken away by keeping the region standing (docs/LOG.md [804]).
+ */
+typedef struct {
+    uint64_t totalNs;
+    int64_t longestNs;
+    unsigned count;
+} BufoDiagKvmTime;
+
+static BufoDiagKvmTime bufoDiagKvmAdd, bufoDiagKvmRemove;
+
+static int bufo_diag_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled == -1) {
+        const char *setting = getenv("QEMU_3DFX_BUFO_DIAG");
+        enabled = (setting && setting[0] != '0')? 1:0;
+    }
+    return enabled;
+}
+
+/* Zero when the diagnostics are off, so the clock is not read for nothing. */
+static int64_t bufo_diag_now_ns(void)
+{
+    if (!bufo_diag_enabled())
+        return 0;
+    return qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+}
+
+static void bufo_diag_kvm_time(const int add, const int64_t start_ns)
+{
+    if (!start_ns)
+        return;
+
+    const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    const int64_t elapsed_ns = now_ns - start_ns;
+    BufoDiagKvmTime *measured = (add)? &bufoDiagKvmAdd:&bufoDiagKvmRemove;
+    measured->totalNs += elapsed_ns;
+    measured->count++;
+    if (elapsed_ns > measured->longestNs)
+        measured->longestNs = elapsed_ns;
+}
+
+static void bufo_diag_kvm_line(const char *what, BufoDiagKvmTime *measured)
+{
+    if (!measured->count)
+        return;
+
+    const double meanMs = (double)measured->totalNs / measured->count / BUFO_DIAG_NS_PER_MILLISECOND;
+    const double longestMs = (double)measured->longestNs / BUFO_DIAG_NS_PER_MILLISECOND;
+    const double totalMs = (double)measured->totalNs / BUFO_DIAG_NS_PER_MILLISECOND;
+    fprintf(stderr, "qemu-3dfx bufo:   region %-6s %6u x  mean %.3f ms  longest %.3f ms  together %.1f ms\n",
+            what, measured->count, meanMs, longestMs, totalMs);
+    measured->totalNs = 0;
+    measured->longestNs = 0;
+    measured->count = 0;
+}
+
+static int bufo_diag_lookup(const mapbufo_t *bufo)
+{
+    const int zeroCopy = (bufo->ocpy)? 0:1;
+
+    for (int i = 0; i < bufoDiagEntryCount; i++) {
+        const BufoDiagEntry *known = &bufoDiagEntries[i];
+        if (known->target == bufo->tgt && known->mapSize == bufo->mapsz && known->access == bufo->acc
+            && known->hostAddress == bufo->hva && known->guestAddress == bufo->gpa && known->zeroCopy == zeroCopy)
+            return i;
+    }
+    return -1;
+}
+
+static int bufo_diag_add(const mapbufo_t *bufo)
+{
+    if (bufoDiagEntryCount == BUFO_DIAG_SLOTS)
+        return -1;
+
+    const int entry = bufoDiagEntryCount++;
+    BufoDiagEntry *added = &bufoDiagEntries[entry];
+    added->target = bufo->tgt;
+    added->mapSize = bufo->mapsz;
+    added->access = bufo->acc;
+    added->hostAddress = bufo->hva;
+    added->guestAddress = bufo->gpa;
+    added->zeroCopy = (bufo->ocpy)? 0:1;
+
+    const char *targetName = tokglstr(added->target);
+    const char *routeName = (added->zeroCopy)? "zero-copy":"copied";
+    fprintf(stderr, "qemu-3dfx bufo: new %-24s size %8u acc %04x hva %p gpa %p %s\n",
+            targetName, added->mapSize, added->access,
+            (void *)added->hostAddress, (void *)added->guestAddress, routeName);
+    return entry;
+}
+
+static void bufo_diag_report(const int64_t now_ns, const int force)
+{
+    const int64_t elapsed_ns = now_ns - bufoDiagWindowStartNs;
+
+    if (!force && elapsed_ns < BUFO_DIAG_REPORT_INTERVAL_NS)
+        return;
+    if (force && !bufoDiagMapCount)
+        return;
+
+    const double elapsed_seconds = (double)elapsed_ns / BUFO_DIAG_NS_PER_SECOND;
+    const double mapsPerSecond = bufoDiagMapCount / elapsed_seconds;
+    fprintf(stderr, "qemu-3dfx bufo: %u mappings in %.1f s (%.1f/s), %u of them a different buffer than the one before, %d combinations known, %u beyond the table\n",
+            bufoDiagMapCount, elapsed_seconds, mapsPerSecond, bufoDiagSwitchCount, bufoDiagEntryCount, bufoDiagBeyondSlots);
+
+    for (int i = 0; i < bufoDiagEntryCount; i++) {
+        const BufoDiagEntry *known = &bufoDiagEntries[i];
+        if (!known->mapCount)
+            continue;
+        const char *targetName = tokglstr(known->target);
+        const char *routeName = (known->zeroCopy)? "zero-copy":"copied";
+        fprintf(stderr, "qemu-3dfx bufo:   %-24s size %8u acc %04x hva %p %-9s %u x\n",
+                targetName, known->mapSize, known->access, (void *)known->hostAddress, routeName, known->mapCount);
+    }
+
+    bufo_diag_kvm_line("up", &bufoDiagKvmAdd);
+    bufo_diag_kvm_line("down", &bufoDiagKvmRemove);
+
+    /* The table stands across windows on purpose: a combination that comes back every frame
+     * then prints its "new" line once and shows up in the count, and one that never comes
+     * back stays silent. Only the counts start over.
+     */
+    for (int i = 0; i < bufoDiagEntryCount; i++)
+        bufoDiagEntries[i].mapCount = 0;
+    bufoDiagMapCount = 0;
+    bufoDiagSwitchCount = 0;
+    bufoDiagWindowStartNs = now_ns;
+}
+
+static void bufo_diag_map(const mapbufo_t *bufo)
+{
+    if (!bufo_diag_enabled() || !bufo)
+        return;
+
+    int entry = bufo_diag_lookup(bufo);
+    if (entry == -1) {
+        entry = bufo_diag_add(bufo);
+        if (entry == -1)
+            bufoDiagBeyondSlots++;
+    }
+
+    if (entry != -1)
+        bufoDiagEntries[entry].mapCount++;
+    if (entry != bufoDiagLastEntry)
+        bufoDiagSwitchCount++;
+    bufoDiagLastEntry = entry;
+    bufoDiagMapCount++;
+
+    const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    if (!bufoDiagWindowStartNs)
+        bufoDiagWindowStartNs = now_ns;
+    bufo_diag_report(now_ns, 0);
+}
+
+/* The last window of a run would otherwise never be printed: the report rides on the next
+ * mapping, and after the guest has unloaded its GL library no further mapping comes.
+ */
+static void bufo_diag_final(void)
+{
+    if (!bufo_diag_enabled())
+        return;
+
+    const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    bufo_diag_report(now_ns, 1);
+    memset(bufoDiagEntries, 0, sizeof(bufoDiagEntries));
+    bufoDiagEntryCount = 0;
+    bufoDiagLastEntry = -1;
+    bufoDiagBeyondSlots = 0;
+    bufoDiagWindowStartNs = 0;
+}
+
 /* Frame counter for the host side, switched on with QEMU_3DFX_FPS=1.
  *
  * A frame rate measured inside the guest cannot be trusted here: QEMU runs the guest's
@@ -2196,7 +2400,10 @@ static void processFRet(MesaPTState *s)
             s->BufObj->offst = 0;
             SZFBT_VALID(s->szUsedBuf, s->FRet);
             s->BufObj->gpa = (uintptr_t)s->fbtm_ptr + MGLFBT_SIZE - s->szUsedBuf;
-            if (MGLUpdateGuestBufo(s->BufObj, 1))
+            const int64_t regionUpStartNs = bufo_diag_now_ns();
+            const int mappedThroughKvm = MGLUpdateGuestBufo(s->BufObj, 1);
+            bufo_diag_kvm_time(1, regionUpStartNs);
+            if (mappedThroughKvm)
                 s->FRet = s->BufObj->gpa;
             else {
                 s->BufObj->ocpy = 1;
@@ -2205,10 +2412,14 @@ static void processFRet(MesaPTState *s)
             }
             DPRINTF_COND(MGL_BUFO_TRACE, "Gpa %p Hva %p target %04x offst %08x range %08x lvl %d",
                 (void *)(s->FRet & (uint64_t)~(1)), (void *)s->BufObj->hva, s->arg[0], s->arg[1], s->arg[2], s->BufObj->lvl);
+            bufo_diag_map(s->BufObj);
             break;
         case FEnum_glUnmapBuffer:
         case FEnum_glUnmapBufferARB:
-            if (MGLUpdateGuestBufo(s->BufObj, 0)) { }
+            const int64_t regionDownStartNs = bufo_diag_now_ns();
+            const int unmappedThroughKvm = MGLUpdateGuestBufo(s->BufObj, 0);
+            bufo_diag_kvm_time(0, regionDownStartNs);
+            if (unmappedThroughKvm) { }
             else {
                 s->szUsedBuf -= (s->szUsedBuf == (s->BufObj->mused + ALIGNBO(s->BufObj->mapsz)))?
                     ALIGNBO(s->BufObj->mapsz):0;
@@ -2517,6 +2728,7 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                 if (s->MesaVer) {
                     MGLWndRelease();
                     DPRINTF("%-64s", "DLL unloaded");
+                    bufo_diag_final();
                     DPRINTF("GL context restored %u times since start", MGLRestoreCount());
                 }
                 FiniMesaGL();
