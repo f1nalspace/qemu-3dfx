@@ -80,5 +80,6 @@ void MesaBlitScale(void);
 void MesaRenderScaler(const uint32_t, void *);
 void MesaSetGuestDrawable(const int, const int);
 void MesaDrawableRecheck(void);
+void MesaResetClientArrays(void);
 
 #endif //MESAGL_IMPL_H

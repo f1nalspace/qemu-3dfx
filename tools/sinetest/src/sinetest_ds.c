@@ -9,6 +9,13 @@
  *
  * Same six formats, same six pitches, so vm/sinecheck.py reads both alike.
  *
+ * With the argument "cursor" it plays one tone instead and measures the only thing a
+ * streaming program really depends on: the play position the hardware reports. On real
+ * hardware that position runs; in a device model that moves it once per audio period it is
+ * a staircase, and a program that computes its write position from it writes sometimes too
+ * early and sometimes too late. Every query goes into an array in memory and is counted up
+ * afterwards -- writing a line per query would change the very timing under test.
+ *
  * Written for Windows 98 and the MinGW cross toolchain, C89 throughout.
  */
 
@@ -21,6 +28,13 @@
 #include <math.h>
 
 #define REPORT_FILE_NAME        "C:\\DSOUT.TXT"
+#define CURSOR_REPORT_FILE_NAME "C:\\DSCURSOR.TXT"
+
+/* The cursor measurement: one tone, queried as fast as the loop goes round. */
+#define CURSOR_SECONDS          5.0
+#define CURSOR_SAMPLE_CAPACITY  400000
+#define CURSOR_TEST_CASE        3       /* 22050 Hz, 16 bit, stereo */
+#define CURSOR_STEPS_PRINTED    12
 
 #define TONE_SECONDS            3.0
 #define SILENCE_SECONDS         0.4
@@ -241,7 +255,204 @@ static int play_one_case(LPDIRECTSOUND direct_sound, const struct test_case *tes
     return 1;
 }
 
-int main(void)
+/* One query of the play position: when, and what came back. */
+struct cursor_sample {
+    LONGLONG ticks;
+    DWORD play_cursor;
+    DWORD write_cursor;
+};
+
+static struct cursor_sample cursor_samples[CURSOR_SAMPLE_CAPACITY];
+
+/* How often each step size turned up, counted into a small table instead of sorted. */
+struct step_count {
+    unsigned long step_frames;
+    unsigned long count;
+};
+
+static void count_step(struct step_count *table, unsigned int table_size,
+                       unsigned int *used, unsigned long step_frames)
+{
+    unsigned int index;
+
+    for (index = 0; index < *used; ++index) {
+        if (table[index].step_frames == step_frames) {
+            table[index].count++;
+            return;
+        }
+    }
+    if (*used < table_size) {
+        table[*used].step_frames = step_frames;
+        table[*used].count = 1;
+        (*used)++;
+    }
+}
+
+static int measure_cursor(LPDIRECTSOUND direct_sound)
+{
+    const struct test_case *test = &test_cases[CURSOR_TEST_CASE];
+    WAVEFORMATEX wave_format;
+    DSBUFFERDESC buffer_description;
+    LPDIRECTSOUNDBUFFER ring_buffer = NULL;
+    HRESULT result;
+    unsigned int bytes_per_frame = (test->bits_per_sample / 8) * test->channel_count;
+    unsigned long ring_bytes;
+    unsigned long write_ahead_bytes;
+    unsigned long written_frames;
+    unsigned long write_cursor_bytes = 0;
+    unsigned long sample_count = 0;
+    unsigned long sample_index;
+    unsigned long standing_queries = 0;
+    unsigned long total_step_frames = 0;
+    LARGE_INTEGER frequency;
+    LARGE_INTEGER now;
+    LARGE_INTEGER started_at;
+    double measured_seconds;
+    struct step_count steps[64];
+    unsigned int steps_used = 0;
+    unsigned int step_index;
+
+    if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart == 0) {
+        report("QueryPerformanceFrequency is not available.\n");
+        return 0;
+    }
+
+    fill_wave_format(&wave_format, test);
+    ring_bytes = (unsigned long)(RING_BUFFER_SECONDS * test->samples_per_second) * bytes_per_frame;
+    write_ahead_bytes = (unsigned long)(WRITE_AHEAD_SECONDS * test->samples_per_second) * bytes_per_frame;
+
+    memset(&buffer_description, 0, sizeof(buffer_description));
+    buffer_description.dwSize = sizeof(buffer_description);
+    buffer_description.dwFlags = DSBCAPS_GETCURRENTPOSITION2 | DSBCAPS_GLOBALFOCUS;
+    buffer_description.dwBufferBytes = ring_bytes;
+    buffer_description.lpwfxFormat = &wave_format;
+
+    result = IDirectSound_CreateSoundBuffer(direct_sound, &buffer_description, &ring_buffer, NULL);
+    if (result != DS_OK) {
+        report("CreateSoundBuffer failed (0x%08lx)\n", (unsigned long)result);
+        return 0;
+    }
+
+    write_into_ring(ring_buffer, 0, ring_bytes, 0, bytes_per_frame, test);
+    written_frames = ring_bytes / bytes_per_frame;
+
+    IDirectSoundBuffer_SetCurrentPosition(ring_buffer, 0);
+    result = IDirectSoundBuffer_Play(ring_buffer, 0, 0, DSBPLAY_LOOPING);
+    if (result != DS_OK) {
+        report("Play failed (0x%08lx)\n", (unsigned long)result);
+        IDirectSoundBuffer_Release(ring_buffer);
+        return 0;
+    }
+
+    report("%5u Hz  %2u bit  %s  tone %4u Hz, %.1f s, queried without pause\n",
+           test->samples_per_second, test->bits_per_sample,
+           test->channel_count == 1 ? "mono  " : "stereo",
+           test->tone_hertz, CURSOR_SECONDS);
+
+    QueryPerformanceCounter(&started_at);
+    for (;;) {
+        DWORD play_cursor = 0;
+        DWORD safe_write_cursor = 0;
+        unsigned long target_bytes;
+        unsigned long pending_bytes;
+
+        QueryPerformanceCounter(&now);
+        measured_seconds = (double)(now.QuadPart - started_at.QuadPart) / (double)frequency.QuadPart;
+        if (measured_seconds >= CURSOR_SECONDS || sample_count >= CURSOR_SAMPLE_CAPACITY) {
+            break;
+        }
+        if (IDirectSoundBuffer_GetCurrentPosition(ring_buffer, &play_cursor, &safe_write_cursor) != DS_OK) {
+            continue;
+        }
+
+        cursor_samples[sample_count].ticks = now.QuadPart;
+        cursor_samples[sample_count].play_cursor = play_cursor;
+        cursor_samples[sample_count].write_cursor = safe_write_cursor;
+        sample_count++;
+
+        /* Keep writing ahead the way a game does, so the measurement sits in the real case. */
+        target_bytes = (play_cursor + write_ahead_bytes) % ring_bytes;
+        if (target_bytes >= write_cursor_bytes) {
+            pending_bytes = target_bytes - write_cursor_bytes;
+        } else {
+            pending_bytes = ring_bytes - write_cursor_bytes + target_bytes;
+        }
+        pending_bytes -= pending_bytes % bytes_per_frame;
+        if (pending_bytes >= write_ahead_bytes / 2) {
+            write_into_ring(ring_buffer, write_cursor_bytes, pending_bytes,
+                            written_frames, bytes_per_frame, test);
+            written_frames += pending_bytes / bytes_per_frame;
+            write_cursor_bytes = (write_cursor_bytes + pending_bytes) % ring_bytes;
+        }
+    }
+
+    IDirectSoundBuffer_Stop(ring_buffer);
+    IDirectSoundBuffer_Release(ring_buffer);
+
+    for (sample_index = 1; sample_index < sample_count; ++sample_index) {
+        DWORD previous_cursor = cursor_samples[sample_index - 1].play_cursor;
+        DWORD current_cursor = cursor_samples[sample_index].play_cursor;
+        unsigned long step_bytes;
+        unsigned long step_frames;
+
+        if (current_cursor >= previous_cursor) {
+            step_bytes = current_cursor - previous_cursor;
+        } else {
+            step_bytes = ring_bytes - previous_cursor + current_cursor;
+        }
+        step_frames = step_bytes / bytes_per_frame;
+        if (step_frames == 0) {
+            standing_queries++;
+        }
+        total_step_frames += step_frames;
+        count_step(steps, (unsigned int)(sizeof(steps) / sizeof(steps[0])), &steps_used, step_frames);
+    }
+
+    report("\n");
+    report("queries            %lu in %.2f s = %.0f per second\n",
+           sample_count, measured_seconds,
+           measured_seconds > 0.0 ? (double)sample_count / measured_seconds : 0.0);
+    report("without progress   %lu = %lu %%\n",
+           standing_queries,
+           sample_count > 1 ? standing_queries * 100 / (sample_count - 1) : 0);
+    report("average step       %.1f frames = %.3f ms\n",
+           sample_count > 1 ? (double)total_step_frames / (double)(sample_count - 1) : 0.0,
+           sample_count > 1
+               ? (double)total_step_frames / (double)(sample_count - 1)
+                 * 1000.0 / (double)test->samples_per_second
+               : 0.0);
+    report("\n");
+    report("the steps the position moved in:\n");
+
+    for (step_index = 0; step_index < CURSOR_STEPS_PRINTED; ++step_index) {
+        unsigned int scan;
+        unsigned int largest = 0;
+        unsigned long largest_count = 0;
+        int found = 0;
+
+        for (scan = 0; scan < steps_used; ++scan) {
+            if (steps[scan].count > largest_count) {
+                largest_count = steps[scan].count;
+                largest = scan;
+                found = 1;
+            }
+        }
+        if (!found) {
+            break;
+        }
+        report("   %+8lu frames  %8lu times  = %8.3f ms\n",
+               steps[largest].step_frames, steps[largest].count,
+               (double)steps[largest].step_frames * 1000.0 / (double)test->samples_per_second);
+        steps[largest].count = 0;
+    }
+
+    report("\n");
+    report("A position that runs shows many different small steps. A staircase shows a zero\n");
+    report("and one step the size of an audio period -- see docs/LOG.md [316].\n");
+    return 1;
+}
+
+int main(int argument_count, char **arguments)
 {
     HMODULE dsound_module;
     DirectSoundCreateFunction create_function;
@@ -253,8 +464,14 @@ int main(void)
     unsigned int case_index;
     unsigned int played_count = 0;
 
-    report_file = fopen(REPORT_FILE_NAME, "w");
-    report("sinetest_ds -- the same tones as sinetest, but through DirectSound\n");
+    int measure_cursor_only = (argument_count > 1 && strcmp(arguments[1], "cursor") == 0);
+
+    report_file = fopen(measure_cursor_only ? CURSOR_REPORT_FILE_NAME : REPORT_FILE_NAME, "w");
+    if (measure_cursor_only) {
+        report("sinetest_ds cursor -- how the play position moves that a streaming program reads\n");
+    } else {
+        report("sinetest_ds -- the same tones as sinetest, but through DirectSound\n");
+    }
     report("-------------------------------------------------------------------\n");
 
     dsound_module = LoadLibrary("dsound.dll");
@@ -297,12 +514,17 @@ int main(void)
     }
     report("\n");
 
-    for (case_index = 0; case_index < TEST_CASE_COUNT; ++case_index) {
-        played_count += play_one_case(direct_sound, &test_cases[case_index]);
-    }
+    if (measure_cursor_only) {
+        played_count = measure_cursor(direct_sound);
+        report("Report: %s\n", CURSOR_REPORT_FILE_NAME);
+    } else {
+        for (case_index = 0; case_index < TEST_CASE_COUNT; ++case_index) {
+            played_count += play_one_case(direct_sound, &test_cases[case_index]);
+        }
 
-    report("\n%u of %u test cases played.\n", played_count, (unsigned int)TEST_CASE_COUNT);
-    report("Report: %s\n", REPORT_FILE_NAME);
+        report("\n%u of %u test cases played.\n", played_count, (unsigned int)TEST_CASE_COUNT);
+        report("Report: %s\n", REPORT_FILE_NAME);
+    }
 
     if (primary_buffer != NULL) {
         IDirectSoundBuffer_Release(primary_buffer);
@@ -310,6 +532,9 @@ int main(void)
     IDirectSound_Release(direct_sound);
     if (report_file != NULL) {
         fclose(report_file);
+    }
+    if (measure_cursor_only) {
+        return played_count == 1 ? 0 : 1;
     }
     return played_count == TEST_CASE_COUNT ? 0 : 1;
 }

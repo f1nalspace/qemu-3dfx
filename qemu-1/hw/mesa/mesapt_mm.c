@@ -60,6 +60,8 @@ typedef struct MesaPTState
     uint32_t reg[4];
     uintptr_t parg[4];
     int mglContext, mglCntxCurrent, mglCntxAtt, mglCntxWGL;
+    /* Set when the client state tracking was reset: the next make-current turns the client arrays of the GL context off to match. */
+    int clientArraysResetPending;
     uint32_t MesaVer;
     uint32_t procRet;
     int pixfmt, pixfmtMax;
@@ -137,10 +139,109 @@ static int vtxarry_push(const vtxarry_t *varry, int cbElem, int start, int len, 
     return 0;
 }
 
+/* QEMU_3DFX_FIFO_CHECK=1: the first leaks in the FIFO data stream print the client array state, which call last
+ * switched each array and what the last draw copied -- to find the array guest and host disagree on.
+ */
+#define FIFO_CHECK_DUMP_LIMIT 3
+#define FIFO_CHECK_PUSH_SLOTS 32
+#define FIFO_CHECK_STATE_SLOTS 32
+#define FIFO_CHECK_TEXTURE_UNIT_SHIFT 24
+#define FIFO_CHECK_GENERIC_ATTRIB6 0x06
+#define FIFO_CHECK_GENERIC_ATTRIB7 0x07
+#define FIFO_CHECK_NO_INDEX (-1)
+
+typedef struct {
+    const char *arrayName;
+    int arrayIndex;
+    int bytesPerElement;
+    int firstElement;
+    int lastElement;
+    int wordsCopied;
+} FifoCheckPush;
+
+typedef struct {
+    uint32_t arrayKey;
+    int switchingFEnum;
+    int enabled;
+    uint32_t switchCount;
+} FifoCheckStateChange;
+
+static FifoCheckPush fifoCheckPushes[FIFO_CHECK_PUSH_SLOTS];
+static int fifoCheckPushCount;
+static int fifoCheckPushFEnum;
+static FifoCheckStateChange fifoCheckStateChanges[FIFO_CHECK_STATE_SLOTS];
+static int fifoCheckStateChangeCount;
+
+static int fifo_check_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled == -1) {
+        const char *setting = getenv("QEMU_3DFX_FIFO_CHECK");
+        enabled = (setting && setting[0] != '0')? 1:0;
+    }
+    return enabled;
+}
+
+static int fifo_check_is_client_array(uint32_t arry)
+{
+    switch (arry) {
+        case GL_COLOR_ARRAY:
+        case GL_EDGE_FLAG_ARRAY:
+        case GL_INDEX_ARRAY:
+        case GL_NORMAL_ARRAY:
+        case GL_TEXTURE_COORD_ARRAY:
+        case GL_VERTEX_ARRAY:
+        case GL_SECONDARY_COLOR_ARRAY:
+        case GL_FOG_COORDINATE_ARRAY:
+        case GL_WEIGHT_ARRAY_ARB:
+        case FIFO_CHECK_GENERIC_ATTRIB6:
+        case FIFO_CHECK_GENERIC_ATTRIB7:
+            return 1;
+    }
+    return 0;
+}
+
+static void fifo_check_note_state(MesaPTState *s, uint32_t arry, int st)
+{
+    if (!fifo_check_enabled() || !fifo_check_is_client_array(arry))
+        return;
+    const uint32_t textureUnitKey = (arry == GL_TEXTURE_COORD_ARRAY)? ((uint32_t)s->texUnit << FIFO_CHECK_TEXTURE_UNIT_SHIFT):0;
+    const uint32_t arrayKey = arry | textureUnitKey;
+    int slot;
+    for (slot = 0; slot < fifoCheckStateChangeCount; slot++) {
+        if (fifoCheckStateChanges[slot].arrayKey == arrayKey)
+            break;
+    }
+    if (slot == fifoCheckStateChangeCount) {
+        if (fifoCheckStateChangeCount >= FIFO_CHECK_STATE_SLOTS)
+            return;
+        fifoCheckStateChangeCount++;
+    }
+    FifoCheckStateChange *change = &fifoCheckStateChanges[slot];
+    change->arrayKey = arrayKey;
+    change->switchingFEnum = s->FEnum;
+    change->enabled = st;
+    change->switchCount++;
+}
+
+static void fifo_check_note_push(const char *arrayName, int arrayIndex, int bytesPerElement, int firstElement, int lastElement, int wordsBeforePadding)
+{
+    if (!fifo_check_enabled() || (fifoCheckPushCount >= FIFO_CHECK_PUSH_SLOTS))
+        return;
+    FifoCheckPush *push = &fifoCheckPushes[fifoCheckPushCount++];
+    push->arrayName = arrayName;
+    push->arrayIndex = arrayIndex;
+    push->bytesPerElement = bytesPerElement;
+    push->firstElement = firstElement;
+    push->lastElement = lastElement;
+    push->wordsCopied = (wordsBeforePadding & 0x01)? (wordsBeforePadding + 1):wordsBeforePadding;
+}
+
 static void vtxarry_state(MesaPTState *s, uint32_t arry, int st)
 {
 #define GENERIC_ATTRIB6 0x06
 #define GENERIC_ATTRIB7 0x07
+    fifo_check_note_state(s, arry, st);
     switch (arry) {
         case GL_COLOR_ARRAY:
             s->Color.enable = st;
@@ -226,11 +327,14 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
 {
     uint8_t *varry_ptr = (uint8_t *)pshm;
     int i, cbElem, n, ovfl;
+    fifoCheckPushCount = 0;
+    fifoCheckPushFEnum = s->FEnum;
     if (s->Interleaved.enable && s->Interleaved.ptr) {
         cbElem = (s->Interleaved.stride)? s->Interleaved.stride:s->Interleaved.size;
         n = (cbElem*(end - start) + s->Interleaved.size);
         n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
         ovfl = vtxarry_push(&s->Interleaved, cbElem, start, (n << 2), varry_ptr);
+        fifo_check_note_push("Interleaved", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
         varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
         s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
         if (ovfl)
@@ -243,6 +347,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->Color.size,s->Color.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->Color, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("Color", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -253,6 +358,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->EdgeFlag.size,s->EdgeFlag.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->EdgeFlag, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("EdgeFlag", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -263,6 +369,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->Index.size,s->Index.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->Index, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("Index", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -273,6 +380,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->Normal.size,s->Normal.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->Normal, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("Normal", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -284,6 +392,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
                 n = cbElem*(end - start) + szgldata(s->TexCoord[i].size,s->TexCoord[i].type);
                 n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
                 ovfl = vtxarry_push(&s->TexCoord[i], cbElem, start, (n << 2), varry_ptr);
+                fifo_check_note_push("TexCoord", i, cbElem, start, end, n);
                 varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
                 s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
                 if (ovfl)
@@ -295,6 +404,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->Vertex.size,s->Vertex.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->Vertex, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("Vertex", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -305,6 +415,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->SecondaryColor.size,s->SecondaryColor.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->SecondaryColor, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("SecondaryColor", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -315,6 +426,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->FogCoord.size,s->FogCoord.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->FogCoord, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("FogCoord", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -325,6 +437,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
             n = cbElem*(end - start) + szgldata(s->Weight.size,s->Weight.type);
             n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
             ovfl = vtxarry_push(&s->Weight, cbElem, start, (n << 2), varry_ptr);
+            fifo_check_note_push("Weight", FIFO_CHECK_NO_INDEX, cbElem, start, end, n);
             varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
             s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
             if (ovfl)
@@ -336,6 +449,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
                 n = cbElem*(end - start) + szgldata(s->GenAttrib[i].size,s->GenAttrib[i].type);
                 n = (n & 0x03)? ((n >> 2) + 1):(n >> 2);
                 ovfl = vtxarry_push(&s->GenAttrib[i], cbElem, start, (n << 2), varry_ptr);
+                fifo_check_note_push("GenAttrib", i, cbElem, start, end, n);
                 varry_ptr += (n & 0x01)? ((n + 1) << 2):(n << 2);
                 s->datacb += (n & 0x01)? ((n + 1) << 2):(n << 2);
                 if (ovfl)
@@ -344,6 +458,49 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
         }
     }
 }
+static void fifo_check_print_array(const char *arrayName, int arrayIndex, const vtxarry_t *varry)
+{
+    const int hasPointer = (varry->ptr != NULL)? 1:0;
+    fprintf(stderr, "qemu-3dfx fifo check:   %-14s %2d  enable %d ptr %d client %d size %04x type %04x stride %d\n",
+            arrayName, arrayIndex, varry->enable, hasPointer, varry->client, varry->size, varry->type, varry->stride);
+}
+
+static void fifo_check_dump(MesaPTState *s, uint32_t dataCounter)
+{
+    static int dumpsPrinted;
+    if (!fifo_check_enabled() || (dumpsPrinted >= FIFO_CHECK_DUMP_LIMIT))
+        return;
+    dumpsPrinted++;
+    fprintf(stderr, "qemu-3dfx fifo check: leak %d at FEnum 0x%03x, data counter %08x, arrayBuf %d elemArryBuf %d vao %d texUnit %d\n",
+            dumpsPrinted, s->FEnum, dataCounter, s->arrayBuf, s->elemArryBuf, s->vao, s->texUnit);
+    fifo_check_print_array("Interleaved", FIFO_CHECK_NO_INDEX, &s->Interleaved);
+    fifo_check_print_array("Color", FIFO_CHECK_NO_INDEX, &s->Color);
+    fifo_check_print_array("EdgeFlag", FIFO_CHECK_NO_INDEX, &s->EdgeFlag);
+    fifo_check_print_array("Index", FIFO_CHECK_NO_INDEX, &s->Index);
+    fifo_check_print_array("Normal", FIFO_CHECK_NO_INDEX, &s->Normal);
+    for (int unit = 0; unit < MAX_TEXUNIT; unit++)
+        fifo_check_print_array("TexCoord", unit, &s->TexCoord[unit]);
+    fifo_check_print_array("Vertex", FIFO_CHECK_NO_INDEX, &s->Vertex);
+    fifo_check_print_array("SecondaryColor", FIFO_CHECK_NO_INDEX, &s->SecondaryColor);
+    fifo_check_print_array("FogCoord", FIFO_CHECK_NO_INDEX, &s->FogCoord);
+    fifo_check_print_array("Weight", FIFO_CHECK_NO_INDEX, &s->Weight);
+    for (int attribute = 0; attribute < 2; attribute++)
+        fifo_check_print_array("GenAttrib", attribute, &s->GenAttrib[attribute]);
+    fprintf(stderr, "qemu-3dfx fifo check:   last draw FEnum 0x%03x copied %d arrays\n", fifoCheckPushFEnum, fifoCheckPushCount);
+    for (int pushIndex = 0; pushIndex < fifoCheckPushCount; pushIndex++) {
+        const FifoCheckPush *push = &fifoCheckPushes[pushIndex];
+        fprintf(stderr, "qemu-3dfx fifo check:     copied %-14s %2d  bytesPerElement %d elements %d..%d words %d\n",
+                push->arrayName, push->arrayIndex, push->bytesPerElement, push->firstElement, push->lastElement, push->wordsCopied);
+    }
+    for (int slot = 0; slot < fifoCheckStateChangeCount; slot++) {
+        const FifoCheckStateChange *change = &fifoCheckStateChanges[slot];
+        const uint32_t textureUnit = change->arrayKey >> FIFO_CHECK_TEXTURE_UNIT_SHIFT;
+        const uint32_t arrayName = change->arrayKey & ((1U << FIFO_CHECK_TEXTURE_UNIT_SHIFT) - 1);
+        fprintf(stderr, "qemu-3dfx fifo check:   array %04x unit %u last set to %d by FEnum 0x%03x, %u switches\n",
+                arrayName, textureUnit, change->enabled, change->switchingFEnum, change->switchCount);
+    }
+}
+
 static void InitClientStates(MesaPTState *s)
 {
     memset(&s->Color, 0, sizeof(vtxarry_t));
@@ -367,6 +524,217 @@ static void InitClientStates(MesaPTState *s)
     s->szPackWidth = 0; s->szUnpackWidth = 0;
     s->szPackHeight = 0; s->szUnpackHeight = 0;
     GLExtUncapped(s->mglCntxWGL);
+}
+
+/* Buffer object mapping diagnostics, switched on with QEMU_3DFX_BUFO_DIAG=1.
+ *
+ * MGL_BUFO_TRACE prints a line per mapping, which is far too much for a game: the readback
+ * that costs 6.2 ms of a 10.8 ms frame (docs/LOG.md [799]) happens once per frame and drowns
+ * in the rest. This prints one line per new combination of target, size, access, host and
+ * guest address instead, plus a counting line every few seconds.
+ *
+ * That answers the two questions the mapping has to answer before it can be kept standing
+ * across frames (docs/LOG.md [801], branch D2): which buffer is the expensive one, and does
+ * its host address stay the same from one frame to the next.
+ */
+#define BUFO_DIAG_SLOTS 32
+#define BUFO_DIAG_REPORT_INTERVAL_NS (5000LL * 1000LL * 1000LL)
+#define BUFO_DIAG_NS_PER_SECOND (1000.0 * 1000.0 * 1000.0)
+#define BUFO_DIAG_NS_PER_MILLISECOND (1000.0 * 1000.0)
+
+typedef struct {
+    uint32_t target, mapSize, access;
+    uintptr_t hostAddress, guestAddress;
+    int zeroCopy;
+    unsigned mapCount;
+} BufoDiagEntry;
+
+static BufoDiagEntry bufoDiagEntries[BUFO_DIAG_SLOTS];
+static int bufoDiagEntryCount;
+static int bufoDiagLastEntry = -1;
+static unsigned bufoDiagMapCount, bufoDiagSwitchCount, bufoDiagBeyondSlots;
+static int64_t bufoDiagWindowStartNs;
+
+/* The share of a mapping that is KVM work: how long the memory region takes to go up and to
+ * come down again. The rest of glMapBuffer and glUnmapBuffer is the GL driver's own -- waiting
+ * for the download into the buffer, and pushing its contents back to the card. Only the KVM
+ * share can be taken away by keeping the region standing (docs/LOG.md [804]).
+ */
+typedef struct {
+    uint64_t totalNs;
+    int64_t longestNs;
+    unsigned count;
+} BufoDiagKvmTime;
+
+static BufoDiagKvmTime bufoDiagKvmAdd, bufoDiagKvmRemove;
+static uint32_t bufoDiagReuseCountReported;
+
+static int bufo_diag_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled == -1) {
+        const char *setting = getenv("QEMU_3DFX_BUFO_DIAG");
+        enabled = (setting && setting[0] != '0')? 1:0;
+    }
+    return enabled;
+}
+
+/* Zero when the diagnostics are off, so the clock is not read for nothing. */
+static int64_t bufo_diag_now_ns(void)
+{
+    if (!bufo_diag_enabled())
+        return 0;
+    return qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+}
+
+static void bufo_diag_kvm_time(const int add, const int64_t start_ns)
+{
+    if (!start_ns)
+        return;
+
+    const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    const int64_t elapsed_ns = now_ns - start_ns;
+    BufoDiagKvmTime *measured = (add)? &bufoDiagKvmAdd:&bufoDiagKvmRemove;
+    measured->totalNs += elapsed_ns;
+    measured->count++;
+    if (elapsed_ns > measured->longestNs)
+        measured->longestNs = elapsed_ns;
+}
+
+static void bufo_diag_kvm_line(const char *what, BufoDiagKvmTime *measured)
+{
+    if (!measured->count)
+        return;
+
+    const double meanMs = (double)measured->totalNs / measured->count / BUFO_DIAG_NS_PER_MILLISECOND;
+    const double longestMs = (double)measured->longestNs / BUFO_DIAG_NS_PER_MILLISECOND;
+    const double totalMs = (double)measured->totalNs / BUFO_DIAG_NS_PER_MILLISECOND;
+    fprintf(stderr, "qemu-3dfx bufo:   region %-6s %6u x  mean %.3f ms  longest %.3f ms  together %.1f ms\n",
+            what, measured->count, meanMs, longestMs, totalMs);
+    measured->totalNs = 0;
+    measured->longestNs = 0;
+    measured->count = 0;
+}
+
+static int bufo_diag_lookup(const mapbufo_t *bufo)
+{
+    const int zeroCopy = (bufo->ocpy)? 0:1;
+
+    for (int i = 0; i < bufoDiagEntryCount; i++) {
+        const BufoDiagEntry *known = &bufoDiagEntries[i];
+        if (known->target == bufo->tgt && known->mapSize == bufo->mapsz && known->access == bufo->acc
+            && known->hostAddress == bufo->hva && known->guestAddress == bufo->gpa && known->zeroCopy == zeroCopy)
+            return i;
+    }
+    return -1;
+}
+
+static int bufo_diag_add(const mapbufo_t *bufo)
+{
+    if (bufoDiagEntryCount == BUFO_DIAG_SLOTS)
+        return -1;
+
+    const int entry = bufoDiagEntryCount++;
+    BufoDiagEntry *added = &bufoDiagEntries[entry];
+    added->target = bufo->tgt;
+    added->mapSize = bufo->mapsz;
+    added->access = bufo->acc;
+    added->hostAddress = bufo->hva;
+    added->guestAddress = bufo->gpa;
+    added->zeroCopy = (bufo->ocpy)? 0:1;
+
+    const char *targetName = tokglstr(added->target);
+    const char *routeName = (added->zeroCopy)? "zero-copy":"copied";
+    fprintf(stderr, "qemu-3dfx bufo: new %-24s size %8u acc %04x hva %p gpa %p %s\n",
+            targetName, added->mapSize, added->access,
+            (void *)added->hostAddress, (void *)added->guestAddress, routeName);
+    return entry;
+}
+
+static void bufo_diag_report(const int64_t now_ns, const int force)
+{
+    const int64_t elapsed_ns = now_ns - bufoDiagWindowStartNs;
+
+    if (!force && elapsed_ns < BUFO_DIAG_REPORT_INTERVAL_NS)
+        return;
+    if (force && !bufoDiagMapCount)
+        return;
+
+    const double elapsed_seconds = (double)elapsed_ns / BUFO_DIAG_NS_PER_SECOND;
+    const double mapsPerSecond = bufoDiagMapCount / elapsed_seconds;
+    fprintf(stderr, "qemu-3dfx bufo: %u mappings in %.1f s (%.1f/s), %u of them a different buffer than the one before, %d combinations known, %u beyond the table\n",
+            bufoDiagMapCount, elapsed_seconds, mapsPerSecond, bufoDiagSwitchCount, bufoDiagEntryCount, bufoDiagBeyondSlots);
+
+    for (int i = 0; i < bufoDiagEntryCount; i++) {
+        const BufoDiagEntry *known = &bufoDiagEntries[i];
+        if (!known->mapCount)
+            continue;
+        const char *targetName = tokglstr(known->target);
+        const char *routeName = (known->zeroCopy)? "zero-copy":"copied";
+        fprintf(stderr, "qemu-3dfx bufo:   %-24s size %8u acc %04x hva %p %-9s %u x\n",
+                targetName, known->mapSize, known->access, (void *)known->hostAddress, routeName, known->mapCount);
+    }
+
+    bufo_diag_kvm_line("up", &bufoDiagKvmAdd);
+    bufo_diag_kvm_line("down", &bufoDiagKvmRemove);
+    const uint32_t reuseCount = MGLKeptGuestBufoReuseCount();
+    const uint32_t reusedInWindow = reuseCount - bufoDiagReuseCountReported;
+    bufoDiagReuseCountReported = reuseCount;
+    const int isRegionKept = MGLKeepGuestBufoEnabled();
+    const char *keptState = (isRegionKept)? "on":"off";
+    fprintf(stderr, "qemu-3dfx bufo:   region kept      %s, taken over again %u x\n", keptState, reusedInWindow);
+
+    /* The table stands across windows on purpose: a combination that comes back every frame
+     * then prints its "new" line once and shows up in the count, and one that never comes
+     * back stays silent. Only the counts start over.
+     */
+    for (int i = 0; i < bufoDiagEntryCount; i++)
+        bufoDiagEntries[i].mapCount = 0;
+    bufoDiagMapCount = 0;
+    bufoDiagSwitchCount = 0;
+    bufoDiagWindowStartNs = now_ns;
+}
+
+static void bufo_diag_map(const mapbufo_t *bufo)
+{
+    if (!bufo_diag_enabled() || !bufo)
+        return;
+
+    int entry = bufo_diag_lookup(bufo);
+    if (entry == -1) {
+        entry = bufo_diag_add(bufo);
+        if (entry == -1)
+            bufoDiagBeyondSlots++;
+    }
+
+    if (entry != -1)
+        bufoDiagEntries[entry].mapCount++;
+    if (entry != bufoDiagLastEntry)
+        bufoDiagSwitchCount++;
+    bufoDiagLastEntry = entry;
+    bufoDiagMapCount++;
+
+    const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    if (!bufoDiagWindowStartNs)
+        bufoDiagWindowStartNs = now_ns;
+    bufo_diag_report(now_ns, 0);
+}
+
+/* The last window of a run would otherwise never be printed: the report rides on the next
+ * mapping, and after the guest has unloaded its GL library no further mapping comes.
+ */
+static void bufo_diag_final(void)
+{
+    if (!bufo_diag_enabled())
+        return;
+
+    const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    bufo_diag_report(now_ns, 1);
+    memset(bufoDiagEntries, 0, sizeof(bufoDiagEntries));
+    bufoDiagEntryCount = 0;
+    bufoDiagLastEntry = -1;
+    bufoDiagBeyondSlots = 0;
+    bufoDiagWindowStartNs = 0;
 }
 
 /* Frame counter for the host side, switched on with QEMU_3DFX_FPS=1.
@@ -1966,6 +2334,8 @@ static void processFRet(MesaPTState *s)
         case FEnum_glDeleteBuffers:
         case FEnum_glDeleteBuffersARB:
             for (int i = 0; i < s->arg[0]; i++) {
+                const int deletedBuffer = ((uint32_t *)s->hshm)[i];
+                MGLRemoveKeptGuestBufoOfBuffer(deletedBuffer);
                 s->pixPackBuf = (((uint32_t *)s->hshm)[i] == s->pixPackBuf)? 0:s->pixPackBuf;
                 s->pixUnpackBuf = (((uint32_t *)s->hshm)[i] == s->pixUnpackBuf)? 0:s->pixUnpackBuf;
                 s->queryBuf = (((uint32_t *)s->hshm)[i] == s->queryBuf)? 0:s->queryBuf;
@@ -2039,7 +2409,10 @@ static void processFRet(MesaPTState *s)
             s->BufObj->offst = 0;
             SZFBT_VALID(s->szUsedBuf, s->FRet);
             s->BufObj->gpa = (uintptr_t)s->fbtm_ptr + MGLFBT_SIZE - s->szUsedBuf;
-            if (MGLUpdateGuestBufo(s->BufObj, 1))
+            const int64_t regionUpStartNs = bufo_diag_now_ns();
+            const int mappedThroughKvm = MGLUpdateGuestBufo(s->BufObj, 1);
+            bufo_diag_kvm_time(1, regionUpStartNs);
+            if (mappedThroughKvm)
                 s->FRet = s->BufObj->gpa;
             else {
                 s->BufObj->ocpy = 1;
@@ -2048,10 +2421,14 @@ static void processFRet(MesaPTState *s)
             }
             DPRINTF_COND(MGL_BUFO_TRACE, "Gpa %p Hva %p target %04x offst %08x range %08x lvl %d",
                 (void *)(s->FRet & (uint64_t)~(1)), (void *)s->BufObj->hva, s->arg[0], s->arg[1], s->arg[2], s->BufObj->lvl);
+            bufo_diag_map(s->BufObj);
             break;
         case FEnum_glUnmapBuffer:
         case FEnum_glUnmapBufferARB:
-            if (MGLUpdateGuestBufo(s->BufObj, 0)) { }
+            const int64_t regionDownStartNs = bufo_diag_now_ns();
+            const int unmappedThroughKvm = MGLUpdateGuestBufo(s->BufObj, 0);
+            bufo_diag_kvm_time(0, regionDownStartNs);
+            if (unmappedThroughKvm) { }
             else {
                 s->szUsedBuf -= (s->szUsedBuf == (s->BufObj->mused + ALIGNBO(s->BufObj->mapsz)))?
                     ALIGNBO(s->BufObj->mapsz):0;
@@ -2322,9 +2699,11 @@ static void ContextCreateCommon(MesaPTState *s)
 {
     s->fifoMax = 0; s->dataMax = 0;
     s->szUsedBuf = 0;
+    MGLRemoveKeptGuestBufo();
     InitBufObj();
     InitSyncObj();
     InitClientStates(s);
+    s->clientArraysResetPending = 1;
     ImplMesaGLReset();
 }
 
@@ -2352,6 +2731,7 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                 }
                 break;
             case 0xD0320:
+                MGLRemoveKeptGuestBufo();
                 if (s->mglContext) {
                     s->mglContext = 0;
                     MGLDeleteContext(0);
@@ -2359,6 +2739,7 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                 if (s->MesaVer) {
                     MGLWndRelease();
                     DPRINTF("%-64s", "DLL unloaded");
+                    bufo_diag_final();
                     DPRINTF("GL context restored %u times since start", MGLRestoreCount());
                 }
                 FiniMesaGL();
@@ -2379,6 +2760,8 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                 uint32_t numData = (s->datacb & 0x03)? ((s->datacb >> 2) + 1):(s->datacb >> 2);
                 DPRINTF_COND(((dataptr[0] - numData) > (ALIGNED(1) >> 2)),
                     "WARN: FIFO data leak 0x%02x %06x %06x", s->FEnum, dataptr[0], numData);
+                if ((dataptr[0] - numData) > (ALIGNED(1) >> 2))
+                    fifo_check_dump(s, dataptr[0]);
                 dataptr[0] = ALIGNED(1) >> 2;
             } while (0);
         }
@@ -2405,10 +2788,13 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                         DPRINTF("wglCreateContext cntx %d curr %d", s->mglContext, s->mglCntxCurrent);
                         s->mglContext = MGLCreateContext(cntxRC[0])? 0:((s->mglCntxAtt)? 0:1);
                         ContextCreateCommon(s);
+                        /* The guest wrapper resets its client state tracking only on this answer. */
+                        cntxRC[1] = 1;
                     }
                     else {
                         //DPRINTF("wglCreateContext cntx %d curr %d %x", s->mglContext, s->mglCntxCurrent, cntxRC[0]);
                         MGLCreateContext(cntxRC[0]);
+                        cntxRC[1] = 0;
                     }
                 } while(0);
                 break;
@@ -2422,6 +2808,11 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                         DPRINTF("wglMakeCurrent cntx %d curr %d lvl %d", s->mglContext, s->mglCntxCurrent, level);
                         DPRINTF("%sWRAPGL32", (char *)&ptVer[1]);
                         s->mglCntxCurrent = MGLMakeCurrent(ptVer[0], level)? 0:1;
+                        if (s->mglCntxCurrent && s->clientArraysResetPending) {
+                            /* ctx[0] may be the one the guest had before, still holding its client arrays. */
+                            MesaResetClientArrays();
+                            s->clientArraysResetPending = 0;
+                        }
                         s->extnYear = GetGLExtYear();
                         s->extnLength = GetGLExtLength();
                         s->szVertCache = GetVertCacheMB() << 19;
@@ -2438,8 +2829,16 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                         DPRINTF("VertexArrayCache %dMB", GetVertCacheMB());
                         DPRINTF("DispTimerSched %s", disptmr? strTimerMS:"disabled");
                         DPRINTF("MappedBufferObject %s-copy", MGLUpdateGuestBufo(0, 0)? "Zero":"One");
+                        const int isRegionKept = MGLKeepGuestBufoEnabled();
+                        const char *regionRoute = (isRegionKept)? "kept standing":"removed at unmap";
+                        DPRINTF("MappedBufferObject region %s", regionRoute);
                         DPRINTF("Guest GL Extensions pass-through for Year %s Length %s",
                                 (s->extnYear)? xYear:"ALL", (s->extnLength)? xLen:"ANY");
+                        /* A context created without deleting the previous one comes through here again, with that one's timer still set. */
+                        if (s->dispTimer) {
+                            timer_del(s->dispTimer);
+                            timer_free(s->dispTimer);
+                        }
                         s->dispTimer = (disptmr)? timer_new_ms(QEMU_CLOCK_VIRTUAL, dispTimerProc, s):0;
                         dispTimerSched(s->dispTimer, &s->crashRC);
                     }
@@ -2458,6 +2857,7 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                 DPRINTF("wglDeleteContext cntx %d curr %d lvl %d", s->mglContext, s->mglCntxCurrent, (int)(MESAGL_MAGIC - val));
                 if (s->mglContext && s->mglCntxCurrent && (val == MESAGL_MAGIC)) {
                     s->perfs.last();
+                    MGLRemoveKeptGuestBufo();
                     MGLDeleteContext(0);
                     if (s->dispTimer) {
                         timer_del(s->dispTimer);

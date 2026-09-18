@@ -38,6 +38,8 @@ void MesaContextAttest(const char *div, int *out)
 /* Compatibility-profile calls, so glcorearb.h has neither the prototypes nor the bit. */
 typedef void (APIENTRYP PFNGLPUSHCLIENTATTRIBCOMPATPROC)(GLbitfield mask);
 typedef void (APIENTRYP PFNGLPOPCLIENTATTRIBCOMPATPROC)(void);
+typedef void (APIENTRYP PFNGLCLIENTACTIVETEXTURECOMPATPROC)(GLenum texture);
+typedef void (APIENTRYP PFNGLDISABLECLIENTSTATECOMPATPROC)(GLenum array);
 #define GL_CLIENT_VERTEX_ARRAY_BIT_COMPAT 0x00000002
 
 static struct {
@@ -636,7 +638,8 @@ void MesaBlitScale(void)
     /* Two ways to fit the image, and only one of them may run: the render scaler resizes the guest's own boxes before it draws, this one resizes the finished frame.
      * Which one carries depends on the title -- a guest whose boxes the scaler never got to see is left to this one.
      * The render scaler enlarges in full screen, and shrinks wherever the drawable is smaller than the guest image and the guest draws straight into it.
-     * A guest that presents from an FBO still has the whole picture there, so shrinking that stays here. When the render scaler shrank, the bars are still painted here.
+     * A guest that presents from an FBO still has the whole picture there, so shrinking that stays here. Wherever the render scaler carries, the bars are still painted here.
+     * The guest's own glClear ends at the scaled scissor and never reaches them -- without this, whatever the drawable held before stays in the bars.
      */
     const int render_scaler_enlarges = fullscreen && (blit.render_scaled == RENDER_SCALED_ENLARGED);
     const int render_scaler_shrinks = drawable_smaller && (blit.render_scaled == RENDER_SCALED_SHRUNK) && !read_binding_at_swap;
@@ -646,10 +649,10 @@ void MesaBlitScale(void)
 
     if (guest_width && guest_height)
         blit_fit_guest_into_drawable(v, &fit);
-    const int bars_around_shrunk_boxes = render_scaler_carries && render_scaler_shrinks && (fit.offset_x || fit.offset_y);
+    const int bars_around_scaled_boxes = render_scaler_carries && (fit.offset_x || fit.offset_y);
 
     if (drawable_context && guest_width && guest_height && size_differs
-            && (scale_the_frame || bars_around_shrunk_boxes)) {
+            && (scale_the_frame || bars_around_scaled_boxes)) {
         unsigned last_prog = blit_program_setup();
         int unit0_texture_binding = 0;
         const int target_width = fit.width, target_height = fit.height;
@@ -766,25 +769,82 @@ static void scaler_diag(const char *what, const int *v, const int drawable_conte
  * the calls such a guest still makes every frame, so the check lives here: two integers
  * compared, and the boxes go through only when the drawable really changed.
  */
+/* A guest that presents without SwapBuffers never reaches MesaBlitScale(), so nobody paints the bars around the boxes the render scaler enlarged for it.
+ * Its glClear ends at the enlarged scissor, and whatever the drawable held before -- the windowed frame, another resolution -- stays in the bars.
+ * The bars lie outside everything the guest draws, so painting them at each glFlush/glFinish costs two quads and touches no picture.
+ */
+static void blit_paint_bars_without_swap(void)
+{
+    MESA_PFN(PFNGLBINDFRAMEBUFFERPROC,          glBindFramebuffer);
+    MESA_PFN(PFNGLDISABLEVERTEXATTRIBARRAYPROC, glDisableVertexAttribArray);
+    MESA_PFN(PFNGLENABLEVERTEXATTRIBARRAYPROC,  glEnableVertexAttribArray);
+    MESA_PFN(PFNGLUNIFORM1IPROC,                glUniform1i);
+    MESA_PFN(PFNGLUSEPROGRAMPROC,               glUseProgram);
+    MESA_PFN(PFNGLVERTEXATTRIBPOINTERPROC,      glVertexAttribPointer);
+    MESA_PFN(PFNGLVIEWPORTPROC,                 glViewport);
+
+    int v[4] = { 0 };
+    const int fullscreen = mesa_gui_fullscreen(v);
+    const int windowed_guest = blit_use_guest_client_size(v);
+    const int guest_width = v[0], guest_height = v[1] & 0x7FFFU;
+    const int drawable_width = v[2], drawable_height = v[3];
+    const int render_scaler_enlarged = (blit.render_scaled == RENDER_SCALED_ENLARGED);
+
+    if (blit.has_swap || !fullscreen || !render_scaler_enlarged || windowed_guest || RenderScalerOff())
+        return;
+    if (!guest_width || !guest_height || !DrawableContext())
+        return;
+
+    struct blit_fit fit;
+    blit_fit_guest_into_drawable(v, &fit);
+    if (!fit.offset_x && !fit.offset_y)
+        return;
+
+    /* The same quad as in MesaBlitScale(), drawn black into each bar. */
+    const float coord[] = {
+        -1,-1,  1,-1,  -1,1,  1,1,
+    };
+    const unsigned last_prog = blit_program_setup();
+    struct save_states save_map;
+
+    if (!blit_program_buffer(&save_map, sizeof(coord), coord)) {
+        if (save_map.draw_binding)
+            PFN_CALL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
+        PFN_CALL(glEnableVertexAttribArray(0));
+        PFN_CALL(glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0));
+        PFN_CALL(glUniform1i(blit.black, GL_TRUE));
+        blit_draw_letterbox_bars(drawable_width, drawable_height, fit.offset_x, fit.offset_y, fit.width, fit.height);
+        PFN_CALL(glDisableVertexAttribArray(0));
+        PFN_CALL(glViewport(save_map.view[0], save_map.view[1], save_map.view[2], save_map.view[3]));
+        if (save_map.draw_binding)
+            PFN_CALL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, save_map.draw_binding));
+        blit_restore_savemap(&save_map);
+    }
+    PFN_CALL(glUseProgram(last_prog));
+}
+
 void MesaDrawableRecheck(void)
 {
-    int v[4];
+    int v[4] = { 0 };
     const int fullscreen = mesa_gui_fullscreen(v);
     const int drawable_width = v[2], drawable_height = v[3];
-    int drawable_context;
-    uint32_t box[4];
+    const int drawable_changed = (drawable_width != blit.last_drawable_width) || (drawable_height != blit.last_drawable_height);
 
-    if ((drawable_width == blit.last_drawable_width) && (drawable_height == blit.last_drawable_height))
-        return;
-    blit.last_drawable_width = drawable_width;
-    blit.last_drawable_height = drawable_height;
-    blit.render_scaled = 0;
-    drawable_context = DrawableContext();
-    if (drawable_context)
-        blit_reapply_guest_boxes();
-    for (int i = 0; i < 4; i++)
-        box[i] = blit.guest_viewport[i];
-    scaler_diag("new surface", v, drawable_context, 0, fullscreen, 0, blit.render_scaled, box);
+    if (drawable_changed) {
+        int drawable_context;
+        uint32_t box[4];
+
+        blit.last_drawable_width = drawable_width;
+        blit.last_drawable_height = drawable_height;
+        blit.render_scaled = 0;
+        drawable_context = DrawableContext();
+        if (drawable_context)
+            blit_reapply_guest_boxes();
+        for (int i = 0; i < 4; i++)
+            box[i] = blit.guest_viewport[i];
+        scaler_diag("new surface", v, drawable_context, 0, fullscreen, 0, blit.render_scaled, box);
+    }
+    blit_paint_bars_without_swap();
 }
 
 void MesaRenderScaler(const uint32_t FEnum, void *args)
@@ -860,3 +920,47 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
                 windowed_guest, acted, box);
 }
 
+
+/* A context the guest wrapper takes as new has every client array off and no array buffers bound. When the host keeps using ctx[0] for it,
+ * the GL state of that context still holds whatever the previous guest context left, so it is brought to that starting point here.
+ */
+#define RESET_CLIENT_ARRAYS_ERROR_DRAIN_LIMIT 16
+void MesaResetClientArrays(void)
+{
+    MESA_PFN(PFNGLBINDBUFFERPROC,                glBindBuffer);
+    MESA_PFN(PFNGLCLIENTACTIVETEXTURECOMPATPROC, glClientActiveTexture);
+    MESA_PFN(PFNGLDISABLECLIENTSTATECOMPATPROC,  glDisableClientState);
+    MESA_PFN(PFNGLDISABLEVERTEXATTRIBARRAYPROC,  glDisableVertexAttribArray);
+    MESA_PFN(PFNGLGETERRORPROC,                  glGetError);
+    MESA_PFN(PFNGLGETINTEGERVPROC,               glGetIntegerv);
+    MESA_PFN(PFNGLVERTEXATTRIBDIVISORPROC,       glVertexAttribDivisor);
+
+    static const GLenum named_arrays[] = {
+        GL_VERTEX_ARRAY, GL_NORMAL_ARRAY, GL_COLOR_ARRAY, GL_INDEX_ARRAY,
+        GL_EDGE_FLAG_ARRAY, GL_SECONDARY_COLOR_ARRAY, GL_FOG_COORDINATE_ARRAY,
+    };
+    GLint attribute_count = 0, texture_coord_count = 0;
+
+    PFN_CALL(glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &attribute_count));
+    PFN_CALL(glGetIntegerv(GL_MAX_TEXTURE_COORDS, &texture_coord_count));
+    for (int attribute = 0; attribute < attribute_count; attribute++) {
+        PFN_CALL(glDisableVertexAttribArray(attribute));
+        if (p_glVertexAttribDivisor)
+            PFN_CALL(glVertexAttribDivisor(attribute, 0));
+    }
+    for (int i = 0; i < ARRAY_SIZE(named_arrays); i++)
+        PFN_CALL(glDisableClientState(named_arrays[i]));
+    for (int unit = 0; unit < texture_coord_count; unit++) {
+        PFN_CALL(glClientActiveTexture(GL_TEXTURE0 + unit));
+        PFN_CALL(glDisableClientState(GL_TEXTURE_COORD_ARRAY));
+    }
+    PFN_CALL(glClientActiveTexture(GL_TEXTURE0));
+    PFN_CALL(glBindBuffer(GL_ARRAY_BUFFER, 0));
+    PFN_CALL(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
+    /* An array this driver does not know must not surface as an error of the guest's next call. */
+    for (int drained = 0; drained < RESET_CLIENT_ARRAYS_ERROR_DRAIN_LIMIT; drained++) {
+        const GLenum error = PFN_CALL(glGetError());
+        if (error == GL_NO_ERROR)
+            break;
+    }
+}

@@ -125,6 +125,8 @@ static HWND GLwnd;
 static HHOOK hHook;
 static int currPixFmt;
 static uint32_t currDC, currGLRC;
+/* Handles for the host's level-0 context handed out to contexts the host created as shared ones: a context created with a share context while none was current. */
+static int sharedLevelZeroHandleCount;
 static uint32_t currPB[MAX_PBUFFER];
 static char vendstr[64];
 static char rendstr[128];
@@ -16997,6 +16999,8 @@ private_wglCreateContextAttribsARB(HDC hDC, HGLRC hShareContext, const int *attr
   argsp[i+2] = 0; argsp[i+3] = 0;
   ptm[0xFDC >> 2] = MESAGL_MAGIC;
   WGL_FUNCP_RET(ret);
+  /* The host answers with the slot of the new context: 0 when it started afresh and reset its client state, otherwise one sharing with another context whose client state it keeps. */
+  const uint32_t hostContextSlot = argsp[1];
   if (ret) {
       if (currGLRC && hShareContext) {
           level++;
@@ -17006,7 +17010,12 @@ private_wglCreateContextAttribsARB(HDC hDC, HGLRC hShareContext, const int *attr
           currDC = (uint32_t)hDC;
           currGLRC = 0;
           level = 0;
-          InitClientStates();
+          if (hostContextSlot == 0) {
+              InitClientStates();
+              sharedLevelZeroHandleCount = 0;
+          }
+          else
+              sharedLevelZeroHandleCount++;
           GLwnd = WindowFromDC(hDC);
       }
   }
@@ -17438,7 +17447,10 @@ mglCreateContext (uint32_t arg0)
         return 0;
     i = arg0 & (MAX_PBUFFER - 1);
     cntxDC[0] = arg0;
+    cntxDC[1] = 0;
     ptm[0xFFC >> 2] = MESAGL_MAGIC;
+    /* The host answers in the next word whether it started its context afresh and reset its client state. */
+    const uint32_t hostStartedAfresh = cntxDC[1];
     if (arg0 == ((MESAGL_HPBDC & 0xFFFFFFF0U) | i)) {
         currRC = (((MESAGL_MAGIC & 0x0FFFFFFFU) << 4) | i);
     }
@@ -17446,7 +17458,10 @@ mglCreateContext (uint32_t arg0)
         DPRINTF("CreateContext %x", arg0);
         currDC = arg0;
         currRC = MESAGL_MAGIC;
-        InitClientStates();
+        if (hostStartedAfresh) {
+            InitClientStates();
+            sharedLevelZeroHandleCount = 0;
+        }
         GLwnd = WindowFromDC((HDC)arg0);
     }
     return currRC;
@@ -17492,6 +17507,11 @@ uint32_t PT_CALL COMPACT
 mglDeleteContext (uint32_t arg0)
 {
     if (level && ((arg0 + level) == MESAGL_MAGIC)) { }
+    else if (!currGLRC && (arg0 == MESAGL_MAGIC) && sharedLevelZeroHandleCount) {
+        /* Another handle still stands for the host's level-0 context; deleting it there would take it away from under that one. */
+        sharedLevelZeroHandleCount--;
+        return TRUE;
+    }
     else if (!currGLRC && (arg0 == MESAGL_MAGIC)) {
         for (int i = 0; i < MAX_PBUFFER; i++) {
             if (currPB[i])
