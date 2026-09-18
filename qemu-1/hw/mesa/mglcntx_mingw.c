@@ -55,6 +55,11 @@ int MGLUpdateGuestBufo(mapbufo_t *bufo, const int add)
 
     return ret;
 }
+/* The region is removed at every unmap here; keeping it standing is only done for KVM, see mglcntx_linux.c. */
+int MGLKeepGuestBufoEnabled(void) { return 0; }
+void MGLRemoveKeptGuestBufo(void) { }
+void MGLRemoveKeptGuestBufoOfBuffer(const int bufferIndex) { }
+uint32_t MGLKeptGuestBufoReuseCount(void) { return 0; }
 
 static LONG WINAPI MGLWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {

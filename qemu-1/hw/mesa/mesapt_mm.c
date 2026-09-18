@@ -567,6 +567,7 @@ typedef struct {
 } BufoDiagKvmTime;
 
 static BufoDiagKvmTime bufoDiagKvmAdd, bufoDiagKvmRemove;
+static uint32_t bufoDiagReuseCountReported;
 
 static int bufo_diag_enabled(void)
 {
@@ -676,6 +677,12 @@ static void bufo_diag_report(const int64_t now_ns, const int force)
 
     bufo_diag_kvm_line("up", &bufoDiagKvmAdd);
     bufo_diag_kvm_line("down", &bufoDiagKvmRemove);
+    const uint32_t reuseCount = MGLKeptGuestBufoReuseCount();
+    const uint32_t reusedInWindow = reuseCount - bufoDiagReuseCountReported;
+    bufoDiagReuseCountReported = reuseCount;
+    const int isRegionKept = MGLKeepGuestBufoEnabled();
+    const char *keptState = (isRegionKept)? "on":"off";
+    fprintf(stderr, "qemu-3dfx bufo:   region kept      %s, taken over again %u x\n", keptState, reusedInWindow);
 
     /* The table stands across windows on purpose: a combination that comes back every frame
      * then prints its "new" line once and shows up in the count, and one that never comes
@@ -2327,6 +2334,8 @@ static void processFRet(MesaPTState *s)
         case FEnum_glDeleteBuffers:
         case FEnum_glDeleteBuffersARB:
             for (int i = 0; i < s->arg[0]; i++) {
+                const int deletedBuffer = ((uint32_t *)s->hshm)[i];
+                MGLRemoveKeptGuestBufoOfBuffer(deletedBuffer);
                 s->pixPackBuf = (((uint32_t *)s->hshm)[i] == s->pixPackBuf)? 0:s->pixPackBuf;
                 s->pixUnpackBuf = (((uint32_t *)s->hshm)[i] == s->pixUnpackBuf)? 0:s->pixUnpackBuf;
                 s->queryBuf = (((uint32_t *)s->hshm)[i] == s->queryBuf)? 0:s->queryBuf;
@@ -2690,6 +2699,7 @@ static void ContextCreateCommon(MesaPTState *s)
 {
     s->fifoMax = 0; s->dataMax = 0;
     s->szUsedBuf = 0;
+    MGLRemoveKeptGuestBufo();
     InitBufObj();
     InitSyncObj();
     InitClientStates(s);
@@ -2721,6 +2731,7 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                 }
                 break;
             case 0xD0320:
+                MGLRemoveKeptGuestBufo();
                 if (s->mglContext) {
                     s->mglContext = 0;
                     MGLDeleteContext(0);
@@ -2818,6 +2829,9 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                         DPRINTF("VertexArrayCache %dMB", GetVertCacheMB());
                         DPRINTF("DispTimerSched %s", disptmr? strTimerMS:"disabled");
                         DPRINTF("MappedBufferObject %s-copy", MGLUpdateGuestBufo(0, 0)? "Zero":"One");
+                        const int isRegionKept = MGLKeepGuestBufoEnabled();
+                        const char *regionRoute = (isRegionKept)? "kept standing":"removed at unmap";
+                        DPRINTF("MappedBufferObject region %s", regionRoute);
                         DPRINTF("Guest GL Extensions pass-through for Year %s Length %s",
                                 (s->extnYear)? xYear:"ALL", (s->extnLength)? xLen:"ANY");
                         /* A context created without deleting the previous one comes through here again, with that one's timer still set. */
@@ -2843,6 +2857,7 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                 DPRINTF("wglDeleteContext cntx %d curr %d lvl %d", s->mglContext, s->mglCntxCurrent, (int)(MESAGL_MAGIC - val));
                 if (s->mglContext && s->mglCntxCurrent && (val == MESAGL_MAGIC)) {
                     s->perfs.last();
+                    MGLRemoveKeptGuestBufo();
                     MGLDeleteContext(0);
                     if (s->dispTimer) {
                         timer_del(s->dispTimer);

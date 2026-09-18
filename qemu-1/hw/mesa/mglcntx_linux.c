@@ -35,6 +35,10 @@
 #ifdef CONFIG_DARWIN
 const char dllname[] = "/opt/X11/lib/libGL.dylib";
 int MGLUpdateGuestBufo(mapbufo_t *bufo, int add) { return 0; }
+int MGLKeepGuestBufoEnabled(void) { return 0; }
+void MGLRemoveKeptGuestBufo(void) { }
+void MGLRemoveKeptGuestBufoOfBuffer(const int bufferIndex) { }
+uint32_t MGLKeptGuestBufoReuseCount(void) { return 0; }
 #endif
 #ifdef CONFIG_LINUX
 #include <linux/version.h>
@@ -54,6 +58,83 @@ static int bufo_accel_en(void)
     }
     return 0;
 }
+
+/* The KVM memory region of the last unmapped buffer stays standing until a mapping needs a different one.
+ * Adding and removing it costs 4.7 ms per frame for WineD3D's 8 MB PBO, which it maps at the same host address every frame (docs/LOG.md [808]).
+ * There is never more than one kept region, and it is removed before any other region is added.
+ * The set of regions in KVM is therefore always one the old code had at some point, and no two of them overlap.
+ * QEMU_3DFX_BUFO_KEEP=0 removes the region at every unmap again.
+ */
+typedef struct {
+    uint64_t guestAddress, size;
+    void *hostAddress;
+    int readonly, bufferIndex, isStanding;
+} KeptGuestBufo;
+
+static KeptGuestBufo keptGuestBufo;
+static uint32_t keptGuestBufoReuseCount;
+
+int MGLKeepGuestBufoEnabled(void)
+{
+    static int enabled = -1;
+    if (enabled == -1) {
+        const char *setting = getenv("QEMU_3DFX_BUFO_KEEP");
+        enabled = (setting && setting[0] == '0')? 0:1;
+    }
+    return enabled;
+}
+
+uint32_t MGLKeptGuestBufoReuseCount(void)
+{
+    return keptGuestBufoReuseCount;
+}
+
+void MGLRemoveKeptGuestBufo(void)
+{
+    if (!keptGuestBufo.isStanding)
+        return;
+    keptGuestBufo.isStanding = 0;
+    kvm_update_guest_pa_range(keptGuestBufo.guestAddress, keptGuestBufo.size, keptGuestBufo.hostAddress, keptGuestBufo.readonly, 0);
+}
+
+void MGLRemoveKeptGuestBufoOfBuffer(const int bufferIndex)
+{
+    if (keptGuestBufo.isStanding && keptGuestBufo.bufferIndex == bufferIndex)
+        MGLRemoveKeptGuestBufo();
+}
+
+static void update_guest_bufo_region(const uint64_t guestAddress, const uint64_t size, void *hostAddress, const int readonly, const int bufferIndex, const int add)
+{
+    if (!MGLKeepGuestBufoEnabled()) {
+        kvm_update_guest_pa_range(guestAddress, size, hostAddress, readonly, add);
+        return;
+    }
+
+    const int isKeptRegion = keptGuestBufo.isStanding
+        && keptGuestBufo.guestAddress == guestAddress && keptGuestBufo.size == size
+        && keptGuestBufo.hostAddress == hostAddress && keptGuestBufo.readonly == readonly;
+
+    if (add) {
+        if (isKeptRegion) {
+            /* Standing already, and from now on owned by this mapping again. */
+            keptGuestBufo.isStanding = 0;
+            keptGuestBufoReuseCount++;
+            return;
+        }
+        MGLRemoveKeptGuestBufo();
+        kvm_update_guest_pa_range(guestAddress, size, hostAddress, readonly, 1);
+        return;
+    }
+
+    MGLRemoveKeptGuestBufo();
+    keptGuestBufo.guestAddress = guestAddress;
+    keptGuestBufo.size = size;
+    keptGuestBufo.hostAddress = hostAddress;
+    keptGuestBufo.readonly = readonly;
+    keptGuestBufo.bufferIndex = bufferIndex;
+    keptGuestBufo.isStanding = 1;
+}
+
 int MGLUpdateGuestBufo(mapbufo_t *bufo, const int add)
 {
     int ret = (GetBufOAccelEN()
@@ -63,10 +144,14 @@ int MGLUpdateGuestBufo(mapbufo_t *bufo, const int add)
 
     if (ret && bufo) {
         bufo->lvl = (add)? MapBufObjGpa(bufo):0;
-        kvm_update_guest_pa_range(MBUFO_BASE | (bufo->gpa & ((MBUFO_SIZE - 1) - (qemu_real_host_page_size() - 1))),
-            bufo->mapsz + (bufo->hva & (qemu_real_host_page_size() - 1)),
-            (void *)(bufo->hva & qemu_real_host_page_mask()),
-            (bufo->acc & GL_MAP_WRITE_BIT)? 0:1, add);
+        const uintptr_t hostPageSize = qemu_real_host_page_size();
+        const uintptr_t hostPageOffsetMask = hostPageSize - 1;
+        const uintptr_t hostPageMask = qemu_real_host_page_mask();
+        const uint64_t guestAddress = MBUFO_BASE | (bufo->gpa & ((MBUFO_SIZE - 1) - hostPageOffsetMask));
+        const uint64_t size = bufo->mapsz + (bufo->hva & hostPageOffsetMask);
+        void *hostAddress = (void *)(bufo->hva & hostPageMask);
+        const int readonly = (bufo->acc & GL_MAP_WRITE_BIT)? 0:1;
+        update_guest_bufo_region(guestAddress, size, hostAddress, readonly, bufo->idx, add);
     }
 
     return ret;
