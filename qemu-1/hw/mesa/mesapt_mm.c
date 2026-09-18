@@ -25,6 +25,7 @@
 
 #include "mesagl_impl.h"
 #include "mesagl_flight.h"
+#include "mesagl_frametap.h"
 
 #define DEBUG_MESAPT
 
@@ -54,6 +55,8 @@ typedef struct MesaPTState
 
     MemoryRegion fbtm_ram;
     uint8_t *fbtm_ptr;
+    MemoryRegion frametap_ram;
+    uint8_t *frametap_ptr;
 
     uint32_t FEnum;
     uintptr_t FRet;
@@ -2083,9 +2086,17 @@ static void processArgs(MesaPTState *s)
             break;
         case FEnum_glBlitFramebuffer:
         case FEnum_glBlitFramebufferEXT:
+            MesaFrametapWindowBlit();
+            MesaRenderScaler(s->FEnum, s->arg);
+            break;
         case FEnum_glScissor:
         case FEnum_glViewport:
             MesaRenderScaler(s->FEnum, s->arg);
+            break;
+        case FEnum_glFinish:
+        case FEnum_glFlush:
+            /* Before the guest's own flush, so that it carries the overlay of a guest that presents without a swap. */
+            MGLFrametapFlush();
             break;
         case FEnum_glDebugMessageInsertARB:
             s->datacb = ALIGNED(s->arg[4]);
@@ -3036,6 +3047,9 @@ static void mesapt_init(Object *obj)
     s->fbtm_ptr = memory_region_get_ram_ptr(&s->fbtm_ram);
     memory_region_add_subregion(sysmem, MESA_FIFO_BASE, &s->fifo_ram);
     memory_region_add_subregion(sysmem, MESA_FBTM_BASE, &s->fbtm_ram);
+    memory_region_init_ram(&s->frametap_ram, NULL, "frametap", FRAMETAP_PAGE_SIZE, &error_fatal);
+    s->frametap_ptr = memory_region_get_ram_ptr(&s->frametap_ram);
+    memory_region_add_subregion(sysmem, FRAMETAP_PAGE_BASE, &s->frametap_ram);
 
     memory_region_init_io(&s->iomem, obj, &mesapt_ops, s, TYPE_MESAPT, PAGE_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
@@ -3046,6 +3060,7 @@ static void mesapt_realize(DeviceState *dev, Error **errp)
     MesaPTState *s = MESAPT(dev);
     mesastat(&s->perfs);
     flight_init();
+    frametap_init(s->frametap_ptr);
 }
 
 static void mesapt_finalize(Object *obj)

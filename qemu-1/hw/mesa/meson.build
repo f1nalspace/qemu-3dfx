@@ -2,6 +2,7 @@ i386_system_ss.add(files(
   'extensions_table.c',
   'mesagl_blit.c',
   'mesagl_flight.c',
+  'mesagl_frametap.c',
   'mesagl_impl.c',
   'mesapt_mm.c',
   'mglcntx_linux.c',
