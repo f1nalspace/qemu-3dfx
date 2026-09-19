@@ -84,6 +84,100 @@ enum {
     if (!p_##f) \
         p_##f = (p)frametap_get_proc(#f, FEnum_##f)
 
+/* A breakdown of frametap's own cost, switched on with QEMU_3DFX_FRAMETAP_DIAG=1 next to a level: rdtsc between the steps of a present, summed up, one line every five seconds.
+ * Nothing is written per frame (docs/LOG.md [901], [902] in the project repository).
+ */
+#define FRAMETAP_DIAG_REPORT_INTERVAL_NS            (5LL * 1000LL * 1000LL * 1000LL)
+#define FRAMETAP_DIAG_LINE_SIZE                     512
+
+typedef enum {
+    FRAMETAP_STEP_ENTRY,
+    FRAMETAP_STEP_WINDOW_SIZE,
+    FRAMETAP_STEP_CONTEXT_AND_COUNT,
+    FRAMETAP_STEP_UNIFORMS,
+    FRAMETAP_STEP_QUERY_BINDINGS,
+    FRAMETAP_STEP_QUERY_CAPABILITIES,
+    FRAMETAP_STEP_DISABLE_CAPABILITIES,
+    FRAMETAP_STEP_SETUP,
+    FRAMETAP_STEP_DRAW,
+    FRAMETAP_STEP_RESTORE,
+    FRAMETAP_STEP_PUBLISH,
+    FRAMETAP_STEP_COUNT,
+} FrametapStep;
+
+static const char *const frametapStepNames[FRAMETAP_STEP_COUNT] = { "entry", "size", "count", "uniforms", "bindings", "caps", "disable", "setup", "draw", "restore", "publish" };
+
+static struct {
+    int enabled;
+    int64_t last_ticks;
+    uint64_t step_ticks[FRAMETAP_STEP_COUNT];
+    /* Flushes and blits that end no frame. */
+    uint64_t check_ticks;
+    uint32_t checks;
+    uint32_t frames;
+    uint32_t toggled_capabilities;
+    uint32_t framebuffer_switches;
+    uint32_t guest_programs;
+    uint32_t guest_vertex_arrays;
+    int64_t window_start_ns;
+} frametapDiag;
+
+static void frametap_diag_start(const int64_t start_ticks)
+{
+    frametapDiag.last_ticks = start_ticks;
+}
+
+static void frametap_diag_mark(const FrametapStep step)
+{
+    if (!frametapDiag.enabled)
+        return;
+    const int64_t now_ticks = cpu_get_host_ticks();
+    frametapDiag.step_ticks[step] += now_ticks - frametapDiag.last_ticks;
+    frametapDiag.last_ticks = now_ticks;
+}
+
+static void frametap_diag_check(const int64_t start_ticks, const int64_t end_ticks)
+{
+    frametapDiag.check_ticks += end_ticks - start_ticks;
+    frametapDiag.checks++;
+}
+
+static void frametap_diag_report(const int64_t now_ns, const double nanoseconds_per_tick)
+{
+    if (!frametapDiag.enabled)
+        return;
+    if (!frametapDiag.window_start_ns)
+        frametapDiag.window_start_ns = now_ns;
+    const int64_t window_ns = now_ns - frametapDiag.window_start_ns;
+    if ((window_ns < FRAMETAP_DIAG_REPORT_INTERVAL_NS) || !frametapDiag.frames)
+        return;
+
+    const double frames = frametapDiag.frames;
+    char steps[FRAMETAP_DIAG_LINE_SIZE];
+    int used = 0;
+    double total_ns = 0;
+    for (int i = 0; i < FRAMETAP_STEP_COUNT; i++) {
+        const double step_ns = nanoseconds_per_tick * frametapDiag.step_ticks[i] / frames;
+        total_ns += step_ns;
+        used += snprintf(steps + used, sizeof(steps) - used, " %s %.0f", frametapStepNames[i], step_ns);
+    }
+    const double check_ns = (frametapDiag.checks)? (nanoseconds_per_tick * frametapDiag.check_ticks / frametapDiag.checks):0;
+    const double toggled_per_frame = frametapDiag.toggled_capabilities / frames;
+    const double framebuffer_switches_per_frame = frametapDiag.framebuffer_switches / frames;
+    const double guest_programs_per_frame = frametapDiag.guest_programs / frames;
+    const double guest_vertex_arrays_per_frame = frametapDiag.guest_vertex_arrays / frames;
+    fprintf(stderr, "qemu-3dfx frametap diag: %u frames, ns per frame:%s = %.0f | %u checks, %.0f ns each | per frame toggled %.2f fb %.2f program %.2f vao %.2f\n",
+        frametapDiag.frames, steps, total_ns, frametapDiag.checks, check_ns, toggled_per_frame, framebuffer_switches_per_frame, guest_programs_per_frame, guest_vertex_arrays_per_frame);
+
+    /* The report runs in the middle of a present, whose next step still measures from last_ticks. */
+    const int enabled = frametapDiag.enabled;
+    const int64_t last_ticks = frametapDiag.last_ticks;
+    memset(&frametapDiag, 0, sizeof(frametapDiag));
+    frametapDiag.enabled = enabled;
+    frametapDiag.last_ticks = last_ticks;
+    frametapDiag.window_start_ns = now_ns;
+}
+
 /* In the order of FrametapApi. The guest names the ones behind GL with the same strings. */
 static const char *const frametapApiNames[FRAMETAP_API_COUNT] = { "OpenGL", "Glide", "DDraw", "D3D", "D3D7", "D3D8", "D3D9" };
 
@@ -193,6 +287,8 @@ void frametap_init(void *page)
     const int requested_level = (setting)? atoi(setting):FRAMETAP_LEVEL_OFF;
     const int bounded_level = MIN(requested_level, FRAMETAP_LEVEL_API_RATE_AND_COST);
     frametap.level = MAX(bounded_level, FRAMETAP_LEVEL_OFF);
+    const char *diag_setting = getenv("QEMU_3DFX_FRAMETAP_DIAG");
+    frametapDiag.enabled = (frametap.level != FRAMETAP_LEVEL_OFF) && diag_setting && (diag_setting[0] != '0');
 
     frametap.page = page;
     frametap.page->magic = FRAMETAP_PAGE_MAGIC;
@@ -201,7 +297,7 @@ void frametap_init(void *page)
     frametap.page->level = frametap.level;
 
     if (frametap.level != FRAMETAP_LEVEL_OFF)
-        fprintf(stderr, "qemu-3dfx frametap: level %d, page at 0x%08x\n", frametap.level, FRAMETAP_PAGE_BASE);
+        fprintf(stderr, "qemu-3dfx frametap: level %d, page at 0x%08x, diag %d\n", frametap.level, FRAMETAP_PAGE_BASE, frametapDiag.enabled);
 }
 
 /* WGL only hands out extension functions, so there the table InitMesaGL() filled has to step in for the core ones. */
@@ -267,6 +363,7 @@ static void frametap_close_interval(const int64_t now_ns, const int64_t now_tick
     frametap.frames_per_second_x100 = (uint32_t)(frames_per_second * FRAMETAP_RATE_TO_HUNDREDTHS + FRAMETAP_ROUND_TO_NEAREST);
     frametap.overlay_cost_ns = (uint32_t)(cost_ns + FRAMETAP_ROUND_TO_NEAREST);
     frametap_format_line(frames_per_second, cost_ns);
+    frametap_diag_report(now_ns, nanoseconds_per_tick);
 
     frametap.interval_start_ns = now_ns;
     frametap.interval_frames = 0;
@@ -536,6 +633,7 @@ static void frametap_draw(FrametapContext *context, const int drawable_width, co
     FRAMETAP_PFN(PFNGLVIEWPORTPROC,        glViewport);
 
     frametap_update_uniforms(context, drawable_width, drawable_height);
+    frametap_diag_mark(FRAMETAP_STEP_UNIFORMS);
 
     GLint saved_program = 0, saved_vertex_array = 0, saved_draw_framebuffer = 0;
     GLint saved_viewport[FRAMETAP_VIEWPORT_VALUES];
@@ -549,18 +647,28 @@ static void frametap_draw(FrametapContext *context, const int drawable_width, co
     PFN_CALL(glGetIntegerv(GL_VIEWPORT, saved_viewport));
     PFN_CALL(glGetIntegerv(GL_POLYGON_MODE, saved_polygon_mode));
     PFN_CALL(glGetBooleanv(GL_COLOR_WRITEMASK, saved_color_mask));
-    for (int i = 0; i < FRAMETAP_CAPABILITY_COUNT; i++) {
+    frametap_diag_mark(FRAMETAP_STEP_QUERY_BINDINGS);
+    for (int i = 0; i < FRAMETAP_CAPABILITY_COUNT; i++)
         capability_was_enabled[i] = PFN_CALL(glIsEnabled(frametapCapabilities[i]));
-        if (capability_was_enabled[i])
-            PFN_CALL(glDisable(frametapCapabilities[i]));
-    }
     if (!context->core_profile) {
-        for (int i = 0; i < FRAMETAP_COMPATIBILITY_CAPABILITY_COUNT; i++) {
+        for (int i = 0; i < FRAMETAP_COMPATIBILITY_CAPABILITY_COUNT; i++)
             compatibility_capability_was_enabled[i] = PFN_CALL(glIsEnabled(frametapCompatibilityCapabilities[i]));
-            if (compatibility_capability_was_enabled[i])
-                PFN_CALL(glDisable(frametapCompatibilityCapabilities[i]));
+    }
+    frametap_diag_mark(FRAMETAP_STEP_QUERY_CAPABILITIES);
+    int toggled_capabilities = 0;
+    for (int i = 0; i < FRAMETAP_CAPABILITY_COUNT; i++) {
+        if (capability_was_enabled[i]) {
+            PFN_CALL(glDisable(frametapCapabilities[i]));
+            toggled_capabilities++;
         }
     }
+    for (int i = 0; i < FRAMETAP_COMPATIBILITY_CAPABILITY_COUNT; i++) {
+        if (compatibility_capability_was_enabled[i]) {
+            PFN_CALL(glDisable(frametapCompatibilityCapabilities[i]));
+            toggled_capabilities++;
+        }
+    }
+    frametap_diag_mark(FRAMETAP_STEP_DISABLE_CAPABILITIES);
     /* A framebuffer switch is paid for in the next swap, so the binding is only touched when it is not the window already. */
     if (saved_draw_framebuffer)
         PFN_CALL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
@@ -574,7 +682,9 @@ static void frametap_draw(FrametapContext *context, const int drawable_width, co
     PFN_CALL(glViewport(0, 0, drawable_width, drawable_height));
     PFN_CALL(glUseProgram(context->program));
     PFN_CALL(glBindVertexArray(context->vertex_array));
+    frametap_diag_mark(FRAMETAP_STEP_SETUP);
     PFN_CALL(glDrawArrays(GL_TRIANGLE_STRIP, 0, FRAMETAP_QUAD_VERTICES));
+    frametap_diag_mark(FRAMETAP_STEP_DRAW);
 
     PFN_CALL(glBindVertexArray(saved_vertex_array));
     PFN_CALL(glUseProgram(saved_program));
@@ -599,6 +709,11 @@ static void frametap_draw(FrametapContext *context, const int drawable_width, co
         if (capability_was_enabled[i])
             PFN_CALL(glEnable(frametapCapabilities[i]));
     }
+    frametap_diag_mark(FRAMETAP_STEP_RESTORE);
+    frametapDiag.toggled_capabilities += toggled_capabilities;
+    frametapDiag.framebuffer_switches += (saved_draw_framebuffer != 0);
+    frametapDiag.guest_programs += (saved_program != 0);
+    frametapDiag.guest_vertex_arrays += (saved_vertex_array != 0);
 }
 
 static void frametap_publish(const int64_t now_ns, const int drawable_width, const int drawable_height)
@@ -634,12 +749,15 @@ static void frametap_present(const void *context_key, const FrametapSource sourc
     frametap.last_api = (source == FRAMETAP_SOURCE_GLIDE)? FRAMETAP_API_GLIDE:context_api;
     frametap.last_source = source;
     frametap_count_frame(now_ns, work_start_ticks);
+    frametap_diag_mark(FRAMETAP_STEP_CONTEXT_AND_COUNT);
 
     const int can_draw = context && (context->state == FRAMETAP_CONTEXT_READY) && frametap.line_length && (drawable_width > 0) && (drawable_height > 0);
     if (can_draw)
         frametap_draw(context, drawable_width, drawable_height);
 
     frametap_publish(now_ns, drawable_width, drawable_height);
+    frametap_diag_mark(FRAMETAP_STEP_PUBLISH);
+    frametapDiag.frames++;
 
     const int64_t work_end_ticks = cpu_get_host_ticks();
     frametap.interval_cost_ticks += work_end_ticks - work_start_ticks;
@@ -651,13 +769,23 @@ void MesaFrametapSwap(const void *context_key)
         return;
 
     const int64_t work_start_ticks = cpu_get_host_ticks();
+    frametap_diag_start(work_start_ticks);
     const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
     frametap.last_swap_ns = now_ns;
     frametap.window_blit_pending = 0;
     frametap.window_draw_pending = 0;
-    int sizes[GUI_SIZE_COUNT] = { 0 };
-    mesa_gui_fullscreen(sizes);
-    frametap_present(context_key, FRAMETAP_SOURCE_SWAP, now_ns, work_start_ticks, sizes[GUI_SIZE_DRAWABLE_WIDTH], sizes[GUI_SIZE_DRAWABLE_HEIGHT]);
+    frametap_diag_mark(FRAMETAP_STEP_ENTRY);
+    /* The scaler asked the window for this very swap a moment ago. Only before its first answer does frametap ask itself. */
+    int drawable_width = 0, drawable_height = 0;
+    MesaBlitDrawableSize(&drawable_width, &drawable_height);
+    if (!drawable_width || !drawable_height) {
+        int sizes[GUI_SIZE_COUNT] = { 0 };
+        mesa_gui_fullscreen(sizes);
+        drawable_width = sizes[GUI_SIZE_DRAWABLE_WIDTH];
+        drawable_height = sizes[GUI_SIZE_DRAWABLE_HEIGHT];
+    }
+    frametap_diag_mark(FRAMETAP_STEP_WINDOW_SIZE);
+    frametap_present(context_key, FRAMETAP_SOURCE_SWAP, now_ns, work_start_ticks, drawable_width, drawable_height);
 }
 
 int MesaFrametapEnabled(void)
@@ -674,7 +802,9 @@ void MesaFrametapGlideSwap(const void *context_key, const int drawable_width, co
         return;
 
     const int64_t work_start_ticks = cpu_get_host_ticks();
+    frametap_diag_start(work_start_ticks);
     const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    frametap_diag_mark(FRAMETAP_STEP_ENTRY);
     frametap_present(context_key, FRAMETAP_SOURCE_GLIDE, now_ns, work_start_ticks, drawable_width, drawable_height);
 }
 
@@ -689,12 +819,18 @@ void MesaFrametapWindowBlit(void)
         return;
 
     const int64_t work_start_ticks = cpu_get_host_ticks();
-    GLint draw_framebuffer = 0;
-    PFN_CALL(glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_framebuffer));
-    if (!draw_framebuffer)
-        frametap.window_blit_pending = 1;
+    /* WineD3D blits its back buffer into the window before every swap. A guest that swaps presents with its swaps, and MesaFrametapFlush() ignores the blit anyway -- so no query. */
+    const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    const int swapped_recently = frametap.last_swap_ns && ((now_ns - frametap.last_swap_ns) < FRAMETAP_SWAP_RECENT_NS);
+    if (!swapped_recently) {
+        GLint draw_framebuffer = 0;
+        PFN_CALL(glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_framebuffer));
+        if (!draw_framebuffer)
+            frametap.window_blit_pending = 1;
+    }
     const int64_t work_end_ticks = cpu_get_host_ticks();
     frametap.interval_cost_ticks += work_end_ticks - work_start_ticks;
+    frametap_diag_check(work_start_ticks, work_end_ticks);
 }
 
 /* Runs before every guest glEnd, glDrawArrays and glDrawElements, and only while frametap is on. DirectDraw through WineD3D presents without swap and without blit:
@@ -718,6 +854,7 @@ void MesaFrametapFlush(const void *context_key)
         return;
 
     const int64_t work_start_ticks = cpu_get_host_ticks();
+    frametap_diag_start(work_start_ticks);
     const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
     const int blit_pending = frametap.window_blit_pending;
     frametap.window_blit_pending = 0;
@@ -732,11 +869,14 @@ void MesaFrametapFlush(const void *context_key)
         if (draw_framebuffer) {
             const int64_t work_end_ticks = cpu_get_host_ticks();
             frametap.interval_cost_ticks += work_end_ticks - work_start_ticks;
+            frametap_diag_check(work_start_ticks, work_end_ticks);
             return;
         }
     }
     int sizes[GUI_SIZE_COUNT] = { 0 };
+    frametap_diag_mark(FRAMETAP_STEP_ENTRY);
     mesa_gui_fullscreen(sizes);
+    frametap_diag_mark(FRAMETAP_STEP_WINDOW_SIZE);
     frametap_present(context_key, FRAMETAP_SOURCE_FLUSH, now_ns, work_start_ticks, sizes[GUI_SIZE_DRAWABLE_WIDTH], sizes[GUI_SIZE_DRAWABLE_HEIGHT]);
 }
 

@@ -823,6 +823,13 @@ static void blit_paint_bars_without_swap(void)
     PFN_CALL(glUseProgram(last_prog));
 }
 
+/* The drawable as of the last MesaDrawableRecheck(). MesaBlitScale() runs it on every swap, right before frametap draws into the same frame. */
+void MesaBlitDrawableSize(int *width, int *height)
+{
+    *width = blit.last_drawable_width;
+    *height = blit.last_drawable_height;
+}
+
 void MesaDrawableRecheck(void)
 {
     int v[4] = { 0 };
