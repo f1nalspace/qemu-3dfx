@@ -57,6 +57,8 @@ typedef struct MesaPTState
     uint8_t *fbtm_ptr;
     MemoryRegion frametap_ram;
     uint8_t *frametap_ptr;
+    /* Read on every draw call, so the check stays a field instead of a call while frametap is off. */
+    int frametap_on;
 
     uint32_t FEnum;
     uintptr_t FRet;
@@ -1355,6 +1357,8 @@ static void processArgs(MesaPTState *s)
             break;
         case FEnum_glDrawArrays:
         case FEnum_glDrawArraysEXT:
+            if (s->frametap_on)
+                MesaFrametapWindowDraw();
             if (s->arg[2] && (s->vao == 0)) {
                 s->elemMax = ((s->arg[1] + s->arg[2] - 1) > s->elemMax)? (s->arg[1] + s->arg[2] - 1):s->elemMax;
                 PushVertexArray(s, s->hshm, s->arg[1], s->arg[1] + s->arg[2] - 1);
@@ -1370,6 +1374,8 @@ static void processArgs(MesaPTState *s)
         case FEnum_glDrawElementsInstancedARB:
         case FEnum_glDrawElementsInstancedBaseInstance:
         case FEnum_glDrawElementsInstancedEXT:
+            if (s->frametap_on)
+                MesaFrametapWindowDraw();
             s->parg[3] = s->arg[3];
             if (s->elemArryBuf == 0) {
                 s->datacb = ALIGNED(s->arg[1] * szgldata(0, s->arg[2]));
@@ -2097,6 +2103,10 @@ static void processArgs(MesaPTState *s)
         case FEnum_glFlush:
             /* Before the guest's own flush, so that it carries the overlay of a guest that presents without a swap. */
             MGLFrametapFlush();
+            break;
+        case FEnum_glEnd:
+            if (s->frametap_on)
+                MesaFrametapWindowDraw();
             break;
         case FEnum_glDebugMessageInsertARB:
             s->datacb = ALIGNED(s->arg[4]);
@@ -3061,6 +3071,7 @@ static void mesapt_realize(DeviceState *dev, Error **errp)
     mesastat(&s->perfs);
     flight_init();
     frametap_init(s->frametap_ptr);
+    s->frametap_on = MesaFrametapEnabled();
 }
 
 static void mesapt_finalize(Object *obj)

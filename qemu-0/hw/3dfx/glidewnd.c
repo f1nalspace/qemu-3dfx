@@ -23,6 +23,7 @@
 #include "ui/console.h"
 
 #include "glide2x_impl.h"
+#include "../mesa/mesagl_frametap.h"
 
 #define DPRINTF(fmt, ...) \
     do { fprintf(stderr, " " fmt "\n", ## __VA_ARGS__); } while(0)
@@ -79,6 +80,7 @@ static int current_glide_res = -1;
 static int scaled_to_fullscreen = -1, scaled_to_width, scaled_to_height;
 static void glide_context_remember(void);
 static void glide_context_forget(void);
+static void glide_frame_complete(void);
 
 
 #ifdef CONFIG_DARWIN
@@ -379,6 +381,9 @@ void init_window(const int res, const char *wndTitle, void *opaque)
         ((drawable_height - tblRes[sel].h) / 2):0;
     const int glide_res_width = (cfg_scaleX)? tblRes[sel].w:0;
     conf_glide2x(flags, glide_res_width, centre_offset_x, centre_offset_y);
+    /* While frametap is off, OpenGLide's swap stays exactly as it was. */
+    void (*present_hook)(void) = (MesaFrametapEnabled())? glide_frame_complete:NULL;
+    conf_glide2x_present_hook(present_hook);
 
     current_glide_res = res;
     scaled_to_fullscreen = glide_fullscreen;
@@ -484,6 +489,8 @@ static void glide_context_remember(void)
 
 static void glide_context_forget(void)
 {
+    /* The context goes with the window, and a new one may come back at the same address. */
+    MesaFrametapForget(glide_context);
     glide_context = NULL;
     glide_context_display = NULL;
     glide_context_draw = None;
@@ -500,10 +507,20 @@ void glide_context_restore(void)
     glXMakeContextCurrent(glide_context_display, glide_context_draw, glide_context_read, glide_context);
     glide_context_restores++;
 }
+
+static void glide_frame_complete(void)
+{
+    MesaFrametapGlideSwap(glide_context, scaled_to_width, scaled_to_height);
+}
 #else
 static void glide_context_remember(void) { }
 static void glide_context_forget(void) { }
 void glide_context_restore(void) { }
+/* No Glide context to draw into here: the frame is counted, nothing is drawn. */
+static void glide_frame_complete(void)
+{
+    MesaFrametapGlideSwap(NULL, scaled_to_width, scaled_to_height);
+}
 #endif
 
 unsigned int glide_context_restore_count(void)

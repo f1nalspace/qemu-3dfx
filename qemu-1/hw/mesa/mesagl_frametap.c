@@ -73,6 +73,15 @@ enum {
 #define FRAMETAP_CORE_PROFILE_MIN_MAJOR             3
 #define FRAMETAP_CORE_PROFILE_MIN_MINOR             2
 
+/* frametap looks its GL functions up itself instead of reading tblMesaGL: InitMesaGL() fills that table only while a guest has the GL DLL loaded,
+ * FiniMesaGL() empties it again, and a Glide game draws with neither -- Descent 3 even unloads the GL DLL of its movies in the middle of a Glide session.
+ * GLX hands out context-independent pointers for every function, so each one is looked up once and kept.
+ */
+#define FRAMETAP_PFN(p, f) \
+    static p p_##f; \
+    if (!p_##f) \
+        p_##f = (p)frametap_get_proc(#f, FEnum_##f)
+
 /* Pure yellow on black, opaque. */
 static const uint8_t frametapTextColor[FRAMETAP_BYTES_PER_PIXEL] = { 0xff, 0xff, 0x00, 0xff };
 static const uint8_t frametapBackgroundColor[FRAMETAP_BYTES_PER_PIXEL] = { 0x00, 0x00, 0x00, 0xff };
@@ -154,6 +163,7 @@ static struct {
     FrametapSource last_source;
     int64_t last_swap_ns;
     int window_blit_pending;
+    int window_draw_pending;
     int64_t interval_start_ns;
     uint32_t interval_frames;
     uint64_t interval_cost_ticks;
@@ -185,6 +195,15 @@ void frametap_init(void *page)
 
     if (frametap.level != FRAMETAP_LEVEL_OFF)
         fprintf(stderr, "qemu-3dfx frametap: level %d, page at 0x%08x\n", frametap.level, FRAMETAP_PAGE_BASE);
+}
+
+/* WGL only hands out extension functions, so there the table InitMesaGL() filled has to step in for the core ones. */
+static void *frametap_get_proc(const char *name, const int function_index)
+{
+    void *proc = MesaGLGetProc(name);
+    if (!proc)
+        proc = GLFEnumFuncPtr(function_index);
+    return proc;
 }
 
 static void frametap_format_line(const double frames_per_second, const double cost_ns)
@@ -289,8 +308,8 @@ static uint8_t *frametap_build_atlas_pixels(void)
 
 static int frametap_context_is_core(void)
 {
-    MESA_PFN(PFNGLGETINTEGERVPROC, glGetIntegerv);
-    MESA_PFN(PFNGLGETSTRINGPROC,   glGetString);
+    FRAMETAP_PFN(PFNGLGETINTEGERVPROC, glGetIntegerv);
+    FRAMETAP_PFN(PFNGLGETSTRINGPROC,   glGetString);
 
     /* GL_CONTEXT_PROFILE_MASK is only a valid query from 3.2 on, and an invalid one would stay in the guest's error state. */
     const GLubyte *version_string = PFN_CALL(glGetString(GL_VERSION));
@@ -308,10 +327,10 @@ static int frametap_context_is_core(void)
 
 static GLuint frametap_compile_shader(const GLenum kind, const char *source, int *compiled)
 {
-    MESA_PFN(PFNGLCOMPILESHADERPROC, glCompileShader);
-    MESA_PFN(PFNGLCREATESHADERPROC,  glCreateShader);
-    MESA_PFN(PFNGLGETSHADERIVPROC,   glGetShaderiv);
-    MESA_PFN(PFNGLSHADERSOURCEPROC,  glShaderSource);
+    FRAMETAP_PFN(PFNGLCOMPILESHADERPROC, glCompileShader);
+    FRAMETAP_PFN(PFNGLCREATESHADERPROC,  glCreateShader);
+    FRAMETAP_PFN(PFNGLGETSHADERIVPROC,   glGetShaderiv);
+    FRAMETAP_PFN(PFNGLSHADERSOURCEPROC,  glShaderSource);
 
     const GLuint shader = PFN_CALL(glCreateShader(kind));
     PFN_CALL(glShaderSource(shader, 1, &source, NULL));
@@ -325,15 +344,15 @@ static GLuint frametap_compile_shader(const GLenum kind, const char *source, int
 /* Builds the program and looks up its uniforms. Needs no binding: the uniforms are set with glProgramUniform later. */
 static int frametap_build_program(FrametapContext *context, const GLint atlas_unit)
 {
-    MESA_PFN(PFNGLATTACHSHADERPROC,          glAttachShader);
-    MESA_PFN(PFNGLBINDFRAGDATALOCATIONPROC,  glBindFragDataLocation);
-    MESA_PFN(PFNGLCREATEPROGRAMPROC,         glCreateProgram);
-    MESA_PFN(PFNGLDELETESHADERPROC,          glDeleteShader);
-    MESA_PFN(PFNGLGETPROGRAMINFOLOGPROC,     glGetProgramInfoLog);
-    MESA_PFN(PFNGLGETPROGRAMIVPROC,          glGetProgramiv);
-    MESA_PFN(PFNGLGETUNIFORMLOCATIONPROC,    glGetUniformLocation);
-    MESA_PFN(PFNGLLINKPROGRAMPROC,           glLinkProgram);
-    MESA_PFN(PFNGLPROGRAMUNIFORM1IVPROC,     glProgramUniform1iv);
+    FRAMETAP_PFN(PFNGLATTACHSHADERPROC,          glAttachShader);
+    FRAMETAP_PFN(PFNGLBINDFRAGDATALOCATIONPROC,  glBindFragDataLocation);
+    FRAMETAP_PFN(PFNGLCREATEPROGRAMPROC,         glCreateProgram);
+    FRAMETAP_PFN(PFNGLDELETESHADERPROC,          glDeleteShader);
+    FRAMETAP_PFN(PFNGLGETPROGRAMINFOLOGPROC,     glGetProgramInfoLog);
+    FRAMETAP_PFN(PFNGLGETPROGRAMIVPROC,          glGetProgramiv);
+    FRAMETAP_PFN(PFNGLGETUNIFORMLOCATIONPROC,    glGetUniformLocation);
+    FRAMETAP_PFN(PFNGLLINKPROGRAMPROC,           glLinkProgram);
+    FRAMETAP_PFN(PFNGLPROGRAMUNIFORM1IVPROC,     glProgramUniform1iv);
 
     int vertex_compiled = 0, fragment_compiled = 0;
     const GLuint vertex_shader = frametap_compile_shader(GL_VERTEX_SHADER, frametapVertexShader, &vertex_compiled);
@@ -370,14 +389,14 @@ static int frametap_build_program(FrametapContext *context, const GLint atlas_un
  */
 static void frametap_upload_atlas(FrametapContext *context, const int context_index, const GLint atlas_unit)
 {
-    MESA_PFN(PFNGLACTIVETEXTUREPROC,    glActiveTexture);
-    MESA_PFN(PFNGLBINDBUFFERPROC,       glBindBuffer);
-    MESA_PFN(PFNGLBINDTEXTUREPROC,      glBindTexture);
-    MESA_PFN(PFNGLGENTEXTURESPROC,      glGenTextures);
-    MESA_PFN(PFNGLGETINTEGERVPROC,      glGetIntegerv);
-    MESA_PFN(PFNGLPIXELSTOREIPROC,      glPixelStorei);
-    MESA_PFN(PFNGLTEXIMAGE2DPROC,       glTexImage2D);
-    MESA_PFN(PFNGLTEXPARAMETERIPROC,    glTexParameteri);
+    FRAMETAP_PFN(PFNGLACTIVETEXTUREPROC,    glActiveTexture);
+    FRAMETAP_PFN(PFNGLBINDBUFFERPROC,       glBindBuffer);
+    FRAMETAP_PFN(PFNGLBINDTEXTUREPROC,      glBindTexture);
+    FRAMETAP_PFN(PFNGLGENTEXTURESPROC,      glGenTextures);
+    FRAMETAP_PFN(PFNGLGETINTEGERVPROC,      glGetIntegerv);
+    FRAMETAP_PFN(PFNGLPIXELSTOREIPROC,      glPixelStorei);
+    FRAMETAP_PFN(PFNGLTEXIMAGE2DPROC,       glTexImage2D);
+    FRAMETAP_PFN(PFNGLTEXPARAMETERIPROC,    glTexParameteri);
 
     static const GLenum unpackLayoutParameters[] = { GL_UNPACK_ROW_LENGTH, GL_UNPACK_SKIP_ROWS, GL_UNPACK_SKIP_PIXELS };
     const int unpackLayoutParameterCount = ARRAY_SIZE(unpackLayoutParameters);
@@ -417,8 +436,8 @@ static void frametap_upload_atlas(FrametapContext *context, const int context_in
 /* Runs once per context. */
 static void frametap_create(FrametapContext *context, const int context_index)
 {
-    MESA_PFN(PFNGLGENVERTEXARRAYSPROC,  glGenVertexArrays);
-    MESA_PFN(PFNGLGETINTEGERVPROC,      glGetIntegerv);
+    FRAMETAP_PFN(PFNGLGENVERTEXARRAYSPROC,  glGenVertexArrays);
+    FRAMETAP_PFN(PFNGLGETINTEGERVPROC,      glGetIntegerv);
 
     GLint texture_units = 0;
     PFN_CALL(glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &texture_units));
@@ -464,8 +483,8 @@ static FrametapContext *frametap_find_context(const void *key)
 /* Only when the drawable or the text changed: the target rectangle in normalized device coordinates, and the glyph numbers. */
 static void frametap_update_uniforms(FrametapContext *context, const int drawable_width, const int drawable_height)
 {
-    MESA_PFN(PFNGLPROGRAMUNIFORM1IVPROC, glProgramUniform1iv);
-    MESA_PFN(PFNGLPROGRAMUNIFORM4FPROC,  glProgramUniform4f);
+    FRAMETAP_PFN(PFNGLPROGRAMUNIFORM1IVPROC, glProgramUniform1iv);
+    FRAMETAP_PFN(PFNGLPROGRAMUNIFORM4FPROC,  glProgramUniform4f);
 
     const int drawable_changed = (context->target_drawable_width != drawable_width) || (context->target_drawable_height != drawable_height);
     const int text_changed = (context->line_serial != frametap.line_serial);
@@ -493,18 +512,18 @@ static void frametap_update_uniforms(FrametapContext *context, const int drawabl
 
 static void frametap_draw(FrametapContext *context, const int drawable_width, const int drawable_height)
 {
-    MESA_PFN(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer);
-    MESA_PFN(PFNGLBINDVERTEXARRAYPROC, glBindVertexArray);
-    MESA_PFN(PFNGLCOLORMASKPROC,       glColorMask);
-    MESA_PFN(PFNGLDISABLEPROC,         glDisable);
-    MESA_PFN(PFNGLDRAWARRAYSPROC,      glDrawArrays);
-    MESA_PFN(PFNGLENABLEPROC,          glEnable);
-    MESA_PFN(PFNGLGETBOOLEANVPROC,     glGetBooleanv);
-    MESA_PFN(PFNGLGETINTEGERVPROC,     glGetIntegerv);
-    MESA_PFN(PFNGLISENABLEDPROC,       glIsEnabled);
-    MESA_PFN(PFNGLPOLYGONMODEPROC,     glPolygonMode);
-    MESA_PFN(PFNGLUSEPROGRAMPROC,      glUseProgram);
-    MESA_PFN(PFNGLVIEWPORTPROC,        glViewport);
+    FRAMETAP_PFN(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer);
+    FRAMETAP_PFN(PFNGLBINDVERTEXARRAYPROC, glBindVertexArray);
+    FRAMETAP_PFN(PFNGLCOLORMASKPROC,       glColorMask);
+    FRAMETAP_PFN(PFNGLDISABLEPROC,         glDisable);
+    FRAMETAP_PFN(PFNGLDRAWARRAYSPROC,      glDrawArrays);
+    FRAMETAP_PFN(PFNGLENABLEPROC,          glEnable);
+    FRAMETAP_PFN(PFNGLGETBOOLEANVPROC,     glGetBooleanv);
+    FRAMETAP_PFN(PFNGLGETINTEGERVPROC,     glGetIntegerv);
+    FRAMETAP_PFN(PFNGLISENABLEDPROC,       glIsEnabled);
+    FRAMETAP_PFN(PFNGLPOLYGONMODEPROC,     glPolygonMode);
+    FRAMETAP_PFN(PFNGLUSEPROGRAMPROC,      glUseProgram);
+    FRAMETAP_PFN(PFNGLVIEWPORTPROC,        glViewport);
 
     frametap_update_uniforms(context, drawable_width, drawable_height);
 
@@ -597,15 +616,10 @@ static void frametap_publish(const int64_t now_ns, const int drawable_width, con
 }
 
 /* One finished frame, whichever call ended it: count it, draw the overlay into it, publish the numbers. */
-static void frametap_present(const void *context_key, const FrametapSource source, const int64_t now_ns, const int64_t work_start_ticks)
+static void frametap_present(const void *context_key, const FrametapSource source, const int64_t now_ns, const int64_t work_start_ticks, const int drawable_width, const int drawable_height)
 {
     frametap.last_source = source;
     frametap_count_frame(now_ns, work_start_ticks);
-
-    int sizes[GUI_SIZE_COUNT] = { 0 };
-    mesa_gui_fullscreen(sizes);
-    const int drawable_width = sizes[GUI_SIZE_DRAWABLE_WIDTH];
-    const int drawable_height = sizes[GUI_SIZE_DRAWABLE_HEIGHT];
 
     FrametapContext *context = frametap_find_context(context_key);
     const int can_draw = context && (context->state == FRAMETAP_CONTEXT_READY) && frametap.line_length && (drawable_width > 0) && (drawable_height > 0);
@@ -627,7 +641,28 @@ void MesaFrametapSwap(const void *context_key)
     const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
     frametap.last_swap_ns = now_ns;
     frametap.window_blit_pending = 0;
-    frametap_present(context_key, FRAMETAP_SOURCE_SWAP, now_ns, work_start_ticks);
+    frametap.window_draw_pending = 0;
+    int sizes[GUI_SIZE_COUNT] = { 0 };
+    mesa_gui_fullscreen(sizes);
+    frametap_present(context_key, FRAMETAP_SOURCE_SWAP, now_ns, work_start_ticks, sizes[GUI_SIZE_DRAWABLE_WIDTH], sizes[GUI_SIZE_DRAWABLE_HEIGHT]);
+}
+
+int MesaFrametapEnabled(void)
+{
+    return frametap.level != FRAMETAP_LEVEL_OFF;
+}
+
+/* Called by OpenGLide right before it swaps, once the Glide frame is complete -- its batched triangles and the LFB are drawn by then.
+ * The Glide context is current; its drawable size comes from the caller, the GL window query knows nothing of Glide.
+ */
+void MesaFrametapGlideSwap(const void *context_key, const int drawable_width, const int drawable_height)
+{
+    if (frametap.level == FRAMETAP_LEVEL_OFF)
+        return;
+
+    const int64_t work_start_ticks = cpu_get_host_ticks();
+    const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    frametap_present(context_key, FRAMETAP_SOURCE_GLIDE, now_ns, work_start_ticks, drawable_width, drawable_height);
 }
 
 /* Runs before every guest glBlitFramebuffer. One that lands in the window ends the frame of a guest that never swaps -- Drakan draws into an FBO,
@@ -635,7 +670,7 @@ void MesaFrametapSwap(const void *context_key)
  */
 void MesaFrametapWindowBlit(void)
 {
-    MESA_PFN(PFNGLGETINTEGERVPROC, glGetIntegerv);
+    FRAMETAP_PFN(PFNGLGETINTEGERVPROC, glGetIntegerv);
 
     if (frametap.level == FRAMETAP_LEVEL_OFF)
         return;
@@ -649,19 +684,47 @@ void MesaFrametapWindowBlit(void)
     frametap.interval_cost_ticks += work_end_ticks - work_start_ticks;
 }
 
-/* Runs before every guest glFlush and glFinish. The first one after a blit into the window presents that frame, unless the guest swaps. */
+/* Runs before every guest glEnd, glDrawArrays and glDrawElements, and only while frametap is on. DirectDraw through WineD3D presents without swap and without blit:
+ * one textured quad into the front buffer of the window per frame, then glFlush (docs/LOG.md [873] in the project repository).
+ * Only a flag here -- the draws run by the thousand, so which framebuffer they went to is asked once, at the flush.
+ */
+void MesaFrametapWindowDraw(void)
+{
+    frametap.window_draw_pending = 1;
+}
+
+/* Runs before every guest glFlush and glFinish. The first one after a blit into the window, or after a draw while the window is bound, presents that frame,
+ * unless the guest swaps.
+ */
 void MesaFrametapFlush(const void *context_key)
 {
-    if ((frametap.level == FRAMETAP_LEVEL_OFF) || !frametap.window_blit_pending)
+    FRAMETAP_PFN(PFNGLGETINTEGERVPROC, glGetIntegerv);
+
+    const int nothing_pending = !frametap.window_blit_pending && !frametap.window_draw_pending;
+    if ((frametap.level == FRAMETAP_LEVEL_OFF) || nothing_pending)
         return;
 
     const int64_t work_start_ticks = cpu_get_host_ticks();
     const int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    const int blit_pending = frametap.window_blit_pending;
     frametap.window_blit_pending = 0;
+    frametap.window_draw_pending = 0;
     const int swapped_recently = frametap.last_swap_ns && ((now_ns - frametap.last_swap_ns) < FRAMETAP_SWAP_RECENT_NS);
     if (swapped_recently)
         return;
-    frametap_present(context_key, FRAMETAP_SOURCE_FLUSH, now_ns, work_start_ticks);
+    if (!blit_pending) {
+        /* Draws into a framebuffer object followed by a flush are no frame -- Drakan renders like that and presents with its blit. */
+        GLint draw_framebuffer = 0;
+        PFN_CALL(glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_framebuffer));
+        if (draw_framebuffer) {
+            const int64_t work_end_ticks = cpu_get_host_ticks();
+            frametap.interval_cost_ticks += work_end_ticks - work_start_ticks;
+            return;
+        }
+    }
+    int sizes[GUI_SIZE_COUNT] = { 0 };
+    mesa_gui_fullscreen(sizes);
+    frametap_present(context_key, FRAMETAP_SOURCE_FLUSH, now_ns, work_start_ticks, sizes[GUI_SIZE_DRAWABLE_WIDTH], sizes[GUI_SIZE_DRAWABLE_HEIGHT]);
 }
 
 /* A destroyed context takes its program, vertex array and texture along. The entry has to go before the next context can come back at the same address. */
