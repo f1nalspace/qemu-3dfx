@@ -691,6 +691,13 @@ void MGLFrametapFlush(void)
     MesaFrametapFlush(current_context);
 }
 
+/* The guest's glDebugMessageInsertARB that names its API arrives on the context it is about. */
+void MGLFrametapGuestApi(const char *api_name, const int name_length)
+{
+    const GLXContext current_context = glXGetCurrentContext();
+    MesaFrametapGuestApi(current_context, api_name, name_length);
+}
+
 static int MGLPresetPixelFormat(void)
 {
     dpy = XOpenDisplay(NULL);

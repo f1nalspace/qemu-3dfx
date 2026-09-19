@@ -31,7 +31,10 @@
  * DirectDraw through WineD3D neither swaps nor blits: it draws one quad into the window and flushes, so a draw with the window bound ends a frame at the next glFlush too.
  * A Glide frame is counted and drawn into from OpenGLide, through the hook it calls right before its swap (setConfigPresentHook).
  *
- * Switched on with QEMU_3DFX_FRAMETAP=1 (the rate) or =2 (the rate and frametap's own cost per frame). Off, the swap hook is one predictable compare.
+ * Switched on with QEMU_3DFX_FRAMETAP=1 (the rate), =2 (the API and the rate) or =3 (the API, the rate and frametap's own cost per frame).
+ * Off, the swap hook is one predictable compare.
+ * The API of a Glide frame is known on the host. Behind GL, only wine9x in the guest knows whether a game runs Direct3D or DirectDraw:
+ * it names the API with a glDebugMessageInsertARB carrying FRAMETAP_API_MESSAGE_ID, once per context. A context that never does is OpenGL.
  * Every caller runs on a vCPU thread under the BQL, so there is no lock.
  */
 
@@ -39,7 +42,9 @@
 #define FRAMETAP_PAGE_BASE      0xefffc000
 #define FRAMETAP_PAGE_SIZE      0x1000
 #define FRAMETAP_PAGE_MAGIC     0x50415446  /* "FTAP" in memory */
-#define FRAMETAP_PAGE_VERSION   1
+#define FRAMETAP_PAGE_VERSION   2
+/* "FTAP" as the id of the guest's glDebugMessageInsertARB that names the API. */
+#define FRAMETAP_API_MESSAGE_ID 0x50415446
 
 /* What ended the last frame. */
 typedef enum {
@@ -53,8 +58,21 @@ typedef enum {
 typedef enum {
     FRAMETAP_LEVEL_OFF = 0,
     FRAMETAP_LEVEL_RATE = 1,
-    FRAMETAP_LEVEL_RATE_AND_COST = 2,
+    FRAMETAP_LEVEL_API_AND_RATE = 2,
+    FRAMETAP_LEVEL_API_RATE_AND_COST = 3,
 } FrametapLevel;
+
+/* The API the last frame came from. Direct3D stands for versions 1 to 6, which all come through DirectDraw. */
+typedef enum {
+    FRAMETAP_API_OPENGL = 0,
+    FRAMETAP_API_GLIDE = 1,
+    FRAMETAP_API_DIRECTDRAW = 2,
+    FRAMETAP_API_DIRECT3D = 3,
+    FRAMETAP_API_DIRECT3D7 = 4,
+    FRAMETAP_API_DIRECT3D8 = 5,
+    FRAMETAP_API_DIRECT3D9 = 6,
+    FRAMETAP_API_COUNT,
+} FrametapApi;
 
 /* The layout a guest reads: fixed-size fields in natural alignment, no padding.
  * The host makes sequence odd before it writes and even again afterwards. A reader copies the page and starts over while sequence was odd or changed underneath it.
@@ -73,7 +91,7 @@ typedef struct {
     uint16_t drawable_width;
     uint16_t drawable_height;
     uint32_t frame_source;
-    uint32_t reserved;
+    uint32_t api;
 } FrametapPage;
 
 void frametap_init(void *page);
@@ -84,5 +102,6 @@ void MesaFrametapFlush(const void *context_key);
 void MesaFrametapForget(const void *context_key);
 int MesaFrametapEnabled(void);
 void MesaFrametapGlideSwap(const void *context_key, const int drawable_width, const int drawable_height);
+void MesaFrametapGuestApi(const void *context_key, const char *api_name, const int name_length);
 
 #endif /* MESAGL_FRAMETAP_H */

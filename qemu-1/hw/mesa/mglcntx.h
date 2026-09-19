@@ -36,6 +36,7 @@ void MGLWndRelease(void);
 int MGLMakeCurrent(uint32_t, int);
 int MGLSwapBuffers(void);
 void MGLFrametapFlush(void);
+void MGLFrametapGuestApi(const char *, const int);
 int MGLChoosePixelFormat(void);
 int MGLDescribePixelFormat(int, unsigned int, void *);
 int MGLSetPixelFormat(int, const void *);

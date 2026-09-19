@@ -46,7 +46,9 @@ enum {
 #define FRAMETAP_UNKNOWN_GLYPH                      '?'
 #define FRAMETAP_GLYPH_WIDTH                        8
 #define FRAMETAP_GLYPH_HEIGHT                       14
-#define FRAMETAP_LINE_GLYPHS                        24
+#define FRAMETAP_LINE_GLYPHS                        32
+/* As wide as the longest name, "OpenGL", so the rate stays in place when the API changes. */
+#define FRAMETAP_API_NAME_WIDTH                     6
 #define FRAMETAP_WINDOW_SLOTS                       4
 #define FRAMETAP_UPDATE_INTERVAL_NS                 (250LL * 1000LL * 1000LL)
 /* A guest that swapped within the last second presents with its swaps; its glFlush calls are no frames. */
@@ -81,6 +83,9 @@ enum {
     static p p_##f; \
     if (!p_##f) \
         p_##f = (p)frametap_get_proc(#f, FEnum_##f)
+
+/* In the order of FrametapApi. The guest names the ones behind GL with the same strings. */
+static const char *const frametapApiNames[FRAMETAP_API_COUNT] = { "OpenGL", "Glide", "DDraw", "D3D", "D3D7", "D3D8", "D3D9" };
 
 /* Pure yellow on black, opaque. */
 static const uint8_t frametapTextColor[FRAMETAP_BYTES_PER_PIXEL] = { 0xff, 0xff, 0x00, 0xff };
@@ -152,6 +157,7 @@ typedef struct {
     uint32_t line_serial;
     int target_drawable_width;
     int target_drawable_height;
+    FrametapApi api;
 } FrametapContext;
 
 static struct {
@@ -161,6 +167,7 @@ static struct {
     uint64_t frame_count;
     int64_t last_frame_ns;
     FrametapSource last_source;
+    FrametapApi last_api;
     int64_t last_swap_ns;
     int window_blit_pending;
     int window_draw_pending;
@@ -184,7 +191,7 @@ void frametap_init(void *page)
 {
     const char *setting = getenv("QEMU_3DFX_FRAMETAP");
     const int requested_level = (setting)? atoi(setting):FRAMETAP_LEVEL_OFF;
-    const int bounded_level = MIN(requested_level, FRAMETAP_LEVEL_RATE_AND_COST);
+    const int bounded_level = MIN(requested_level, FRAMETAP_LEVEL_API_RATE_AND_COST);
     frametap.level = MAX(bounded_level, FRAMETAP_LEVEL_OFF);
 
     frametap.page = page;
@@ -209,13 +216,16 @@ static void *frametap_get_proc(const char *name, const int function_index)
 static void frametap_format_line(const double frames_per_second, const double cost_ns)
 {
     const unsigned rounded_rate = (unsigned)(frames_per_second + FRAMETAP_ROUND_TO_NEAREST);
+    const char *api_name = frametapApiNames[frametap.last_api];
     char text[FRAMETAP_LINE_GLYPHS + 1];
     int length;
     /* Fixed widths, so the box keeps its size while the numbers change. */
-    if (frametap.level == FRAMETAP_LEVEL_RATE_AND_COST) {
+    if (frametap.level == FRAMETAP_LEVEL_API_RATE_AND_COST) {
         const double cost_us = cost_ns / FRAMETAP_NANOSECONDS_PER_MICROSECOND;
-        length = snprintf(text, sizeof(text), " %5u FPS %6.1f us ", rounded_rate, cost_us);
+        length = snprintf(text, sizeof(text), " %-*s %5u FPS %6.1f us ", FRAMETAP_API_NAME_WIDTH, api_name, rounded_rate, cost_us);
     }
+    else if (frametap.level == FRAMETAP_LEVEL_API_AND_RATE)
+        length = snprintf(text, sizeof(text), " %-*s %5u FPS ", FRAMETAP_API_NAME_WIDTH, api_name, rounded_rate);
     else
         length = snprintf(text, sizeof(text), " %5u FPS ", rounded_rate);
     frametap.line_length = MIN(length, FRAMETAP_LINE_GLYPHS);
@@ -610,6 +620,7 @@ static void frametap_publish(const int64_t now_ns, const int drawable_width, con
     page->drawable_width = drawable_width;
     page->drawable_height = drawable_height;
     page->frame_source = frametap.last_source;
+    page->api = frametap.last_api;
     smp_wmb();
     frametap.page_sequence++;
     qatomic_set(&page->sequence, frametap.page_sequence);
@@ -618,10 +629,12 @@ static void frametap_publish(const int64_t now_ns, const int drawable_width, con
 /* One finished frame, whichever call ended it: count it, draw the overlay into it, publish the numbers. */
 static void frametap_present(const void *context_key, const FrametapSource source, const int64_t now_ns, const int64_t work_start_ticks, const int drawable_width, const int drawable_height)
 {
+    FrametapContext *context = frametap_find_context(context_key);
+    const FrametapApi context_api = (context)? context->api:FRAMETAP_API_OPENGL;
+    frametap.last_api = (source == FRAMETAP_SOURCE_GLIDE)? FRAMETAP_API_GLIDE:context_api;
     frametap.last_source = source;
     frametap_count_frame(now_ns, work_start_ticks);
 
-    FrametapContext *context = frametap_find_context(context_key);
     const int can_draw = context && (context->state == FRAMETAP_CONTEXT_READY) && frametap.line_length && (drawable_width > 0) && (drawable_height > 0);
     if (can_draw)
         frametap_draw(context, drawable_width, drawable_height);
@@ -725,6 +738,24 @@ void MesaFrametapFlush(const void *context_key)
     int sizes[GUI_SIZE_COUNT] = { 0 };
     mesa_gui_fullscreen(sizes);
     frametap_present(context_key, FRAMETAP_SOURCE_FLUSH, now_ns, work_start_ticks, sizes[GUI_SIZE_DRAWABLE_WIDTH], sizes[GUI_SIZE_DRAWABLE_HEIGHT]);
+}
+
+/* wine9x names its API once per context, right after the context became current -- see FRAMETAP_API_MESSAGE_ID. A name it does not know leaves the context OpenGL. */
+void MesaFrametapGuestApi(const void *context_key, const char *api_name, const int name_length)
+{
+    if (frametap.level == FRAMETAP_LEVEL_OFF)
+        return;
+
+    FrametapContext *context = frametap_find_context(context_key);
+    if (!context)
+        return;
+    for (int api = 0; api < FRAMETAP_API_COUNT; api++) {
+        const char *known_name = frametapApiNames[api];
+        const int known_length = strlen(known_name);
+        const int name_matches = (name_length > known_length) && !memcmp(api_name, known_name, known_length) && (api_name[known_length] == 0);
+        if (name_matches)
+            context->api = api;
+    }
 }
 
 /* A destroyed context takes its program, vertex array and texture along. The entry has to go before the next context can come back at the same address. */

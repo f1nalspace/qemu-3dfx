@@ -2115,6 +2115,10 @@ static void processArgs(MesaPTState *s)
                 (s->arg[2] == GL_DEBUG_SEVERITY_LOW_ARB) &&
                 (sizeof(uint32_t) == s->arg[4]))
                 MGLMouseWarp(*(uint32_t *)(s->hshm));
+            if ((s->arg[0] == GL_DEBUG_SOURCE_APPLICATION_ARB) &&
+                (s->arg[1] == GL_DEBUG_TYPE_OTHER_ARB) &&
+                (s->arg[2] == FRAMETAP_API_MESSAGE_ID))
+                MGLFrametapGuestApi((const char *)(s->hshm), s->arg[4]);
             ASSERT_ATTEST(((char *)(s->hshm)));
             DPRINTF_COND(((s->arg[0] == GL_DEBUG_SOURCE_OTHER_ARB) &&
                 (s->arg[1] == GL_DEBUG_TYPE_OTHER_ARB) &&

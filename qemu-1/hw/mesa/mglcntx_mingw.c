@@ -776,6 +776,7 @@ uint32_t MGLRestoreCount(void) { return 0; }
 
 /* frametap draws only on the GLX backend so far. */
 void MGLFrametapFlush(void) { }
+void MGLFrametapGuestApi(const char *api_name, const int name_length) { }
 
 #endif //CONFIG_WIN32
 
