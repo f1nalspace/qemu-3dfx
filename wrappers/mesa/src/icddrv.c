@@ -983,21 +983,23 @@ void WINAPI mgdSetCallbackProcs(INT nProcs, PROC *pProcs)
 BOOL WINAPI mgdReleaseContext(HGLRC dhglrc)
 {
 	icdlog("ENTRY: mgdReleaseContext(%p)\n", dhglrc);
-	
+
 	ctx_list_t *item = ctx_list_lookup(dhglrc);
 	if(item)
 	{
 		icdlog("  %p -> %p\n", dhglrc, item->hwrc);
-		//if(item->hwrc == (HGLRC)mglGetCurrentContext())
-		if(dhglrc_active == dhglrc)
-		{
-			mglMakeCurrent(0, 0);
-			dhglrc_active = 0;
-		}
-		return TRUE;
 	}
-	
-	return FALSE;
+
+	/* An unknown or already deleted handle means nothing of ours is bound any more, and that is not an error: wglMakeCurrent(NULL,
+	 * NULL) is a legal call on a thread with no current context. Returning FALSE here made Unreal Tournament assert on exit, and
+	 * every further release failed the same way -- measured in docs/LOG.md [966]. */
+	if(dhglrc_active != 0 && (item == NULL || dhglrc_active == dhglrc))
+	{
+		mglMakeCurrent(0, 0);
+		dhglrc_active = 0;
+	}
+
+	return TRUE;
 }
 
 PGLCLTPROCTABLE *WINAPI mgdSetContext(HDC hdc, HGLRC dhglrc, void *pfnSetProcTable)
