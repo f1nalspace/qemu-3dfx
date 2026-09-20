@@ -12,7 +12,7 @@ LDFLAGS=-static-libgcc
 LDFLAGS+=-Wl,--disable-auto-image-base,--no-seh,--dynamicbase,--nxcompat
 SRCDIR=../src
 TARGET=opengl32.dll
-TARGETICD=qmfxgl32.dll
+TARGETICD=fvm3dx32.dll
 TOOLS=wglinfo.exe
 GENDEF=gendef
 
