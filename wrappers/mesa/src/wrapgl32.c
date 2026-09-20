@@ -492,46 +492,113 @@ static int ctx0_quirks(void)
     }
     return (use_ctx0[i])? 1:0;
 }
+/* One setting, in the Name,Value form wrapgl32.ext uses. The registry feeds the same function, so the list of names stays single. */
+static void parse_option_line(struct mglOptions *opt, const char *line)
+{
+    int i, v;
+    i = parse_value(line, "DispTimerMS,", &v);
+    opt->dispTimerMS = (i == 1)? (0x8000U | (v & 0x7FFFU)):opt->dispTimerMS;
+    i = parse_value(line, "SwapInterval,", &v);
+    opt->swapInt = (i == 1)? (v & 0x03U):opt->swapInt;
+    i = parse_value(line, "BufOAccelEN,", &v);
+    opt->bufoAcc = ((i == 1) && v)? 1:opt->bufoAcc;
+    i = parse_value(line, "ContextMSAA,", &v);
+    opt->useMSAA = ((i == 1) && v)? ((v & 0x03U) << 2):opt->useMSAA;
+    i = parse_value(line, "ContextSRGB,", &v);
+    opt->useSRGB = ((i == 1) && v)? 1:opt->useSRGB;
+    i = parse_value(line, "CtxZeroQuirksOff,", &v);
+    opt->useZERO = ((i == 1) && v)? 0:opt->useZERO;
+    i = parse_value(line, "ScalerBltFlip,", &v);
+    opt->bltFlip = ((i == 1) && v)? 0x12U:opt->bltFlip;
+    i = parse_value(line, "RenderScalerOff,", &v);
+    opt->scalerOff = ((i == 1) && v)? 2:opt->scalerOff;
+    i = parse_value(line, "ContextVsyncOff,", &v);
+    opt->vsyncOff = ((i == 1) && v)? 1:opt->vsyncOff;
+    i = parse_value(line, "ExtensionsYear,", &v);
+    opt->xstrYear = (i == 1)? v:opt->xstrYear;
+    i = parse_value(line, "ConformantTexClampOff,", &v);
+    texClampFix = ((i == 1) && v)? 1:texClampFix;
+    i = parse_value(line, "CursorSyncOff,", &v);
+    swapCur = ((i == 1) && v)? 0:swapCur;
+    i = parse_value(line, "FpsLimit,", &v);
+    swapFps = (i == 1)? (v & 0x7FU):swapFps;
+    i = parse_value(line, "MapBufferInGuestOff,", &v);
+    mapBufferInGuestOff = ((i == 1) && v)? 1:mapBufferInGuestOff;
+}
+
+#define FVM3DX_APPS_KEY "Software\\fvm3dx\\apps"
+
+/* Name of the running program without its path -- the key under apps\exe is called after it. */
+static const char *running_exe_name(void)
+{
+    static char module_path[MAX_PATH];
+    DWORD path_length = GetModuleFileName(NULL, module_path, MAX_PATH);
+    int i;
+
+    if (path_length == 0)
+        return NULL;
+    i = strnlen(module_path, MAX_PATH);
+    while (i && module_path[i] != '\\') i--;
+    return (module_path[i] == '\\')? &module_path[i + 1]:module_path;
+}
+
+/* Every value of one key, handed to the same parser the file uses. DWORD and string both, anything else is skipped. */
+static void parse_options_from_key(struct mglOptions *opt, const char *key_path)
+{
+    HKEY key;
+    LSTATUS open_result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, key_path, 0, KEY_READ, &key);
+    DWORD index;
+
+    if (open_result != ERROR_SUCCESS)
+        return;
+
+    for (index = 0; ; index++) {
+        char value_name[MAX_XSTR], line[2 * MAX_XSTR];
+        BYTE value_data[MAX_XSTR];
+        DWORD name_length = sizeof(value_name), data_length = sizeof(value_data), value_type = 0;
+        LSTATUS enum_result = RegEnumValue(key, index, value_name, &name_length, NULL, &value_type, value_data, &data_length);
+
+        if (enum_result != ERROR_SUCCESS)
+            break;
+        switch (value_type) {
+            case REG_DWORD: {
+                DWORD number = *(DWORD *)value_data;
+                wsprintf(line, "%s,%lu", value_name, number);
+                break;
+            }
+            case REG_SZ:
+                value_data[sizeof(value_data) - 1] = '\0';
+                wsprintf(line, "%s,%s", value_name, (const char *)value_data);
+                break;
+            default:
+                continue;
+        }
+        parse_option_line(opt, line);
+    }
+    RegCloseKey(key);
+}
+
 static void parse_options(struct mglOptions *opt)
 {
     FILE *f = opt_fopen();
+    const char *exe_name = running_exe_name();
     memset(opt, 0, sizeof(struct mglOptions));
     /* Sync host color cursor only for Bochs SVGA */
     swapCur = display_device_supported();
     opt->useZERO = ctx0_quirks() << 5;
+
+    /* The registry first, the file last: wrapgl32.ext next to the EXE stays the escape hatch and overrides everything. */
+    parse_options_from_key(opt, FVM3DX_APPS_KEY "\\global");
+    if (exe_name) {
+        char app_key_path[MAX_PATH];
+        wsprintf(app_key_path, "%s\\exe\\%s", FVM3DX_APPS_KEY, exe_name);
+        parse_options_from_key(opt, app_key_path);
+    }
+
     if (f) {
         char line[MAX_XSTR];
-        int i, v;
-        while(fgets(line, MAX_XSTR, f)) {
-            i = parse_value(line, "DispTimerMS,", &v);
-            opt->dispTimerMS = (i == 1)? (0x8000U | (v & 0x7FFFU)):opt->dispTimerMS;
-            i = parse_value(line, "SwapInterval,", &v);
-            opt->swapInt = (i == 1)? (v & 0x03U):opt->swapInt;
-            i = parse_value(line, "BufOAccelEN,", &v);
-            opt->bufoAcc = ((i == 1) && v)? 1:opt->bufoAcc;
-            i = parse_value(line, "ContextMSAA,", &v);
-            opt->useMSAA = ((i == 1) && v)? ((v & 0x03U) << 2):opt->useMSAA;
-            i = parse_value(line, "ContextSRGB,", &v);
-            opt->useSRGB = ((i == 1) && v)? 1:opt->useSRGB;
-            i = parse_value(line, "CtxZeroQuirksOff,", &v);
-            opt->useZERO = ((i == 1) && v)? 0:opt->useZERO;
-            i = parse_value(line, "ScalerBltFlip,", &v);
-            opt->bltFlip = ((i == 1) && v)? 0x12U:opt->bltFlip;
-            i = parse_value(line, "RenderScalerOff,", &v);
-            opt->scalerOff = ((i == 1) && v)? 2:opt->scalerOff;
-            i = parse_value(line, "ContextVsyncOff,", &v);
-            opt->vsyncOff = ((i == 1) && v)? 1:opt->vsyncOff;
-            i = parse_value(line, "ExtensionsYear,", &v);
-            opt->xstrYear = (i == 1)? v:opt->xstrYear;
-            i = parse_value(line, "ConformantTexClampOff,", &v);
-            texClampFix = ((i == 1) && v)? 1:texClampFix;
-            i = parse_value(line, "CursorSyncOff,", &v);
-            swapCur = ((i == 1) && v)? 0:swapCur;
-            i = parse_value(line, "FpsLimit,", &v);
-            swapFps = (i == 1)? (v & 0x7FU):swapFps;
-            i = parse_value(line, "MapBufferInGuestOff,", &v);
-            mapBufferInGuestOff = ((i == 1) && v)? 1:mapBufferInGuestOff;
-        }
+        while(fgets(line, MAX_XSTR, f))
+            parse_option_line(opt, line);
         fclose(f);
     }
 }
