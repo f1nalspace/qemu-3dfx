@@ -466,7 +466,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
 static void fifo_check_print_array(const char *arrayName, int arrayIndex, const vtxarry_t *varry)
 {
     const int hasPointer = (varry->ptr != NULL)? 1:0;
-    fprintf(stderr, "qemu-3dfx fifo check:   %-14s %2d  enable %d ptr %d client %d size %04x type %04x stride %d\n",
+    fprintf(stderr, "fvm3dx fifo check:   %-14s %2d  enable %d ptr %d client %d size %04x type %04x stride %d\n",
             arrayName, arrayIndex, varry->enable, hasPointer, varry->client, varry->size, varry->type, varry->stride);
 }
 
@@ -476,7 +476,7 @@ static void fifo_check_dump(MesaPTState *s, uint32_t dataCounter)
     if (!fifo_check_enabled() || (dumpsPrinted >= FIFO_CHECK_DUMP_LIMIT))
         return;
     dumpsPrinted++;
-    fprintf(stderr, "qemu-3dfx fifo check: leak %d at FEnum 0x%03x, data counter %08x, arrayBuf %d elemArryBuf %d vao %d texUnit %d\n",
+    fprintf(stderr, "fvm3dx fifo check: leak %d at FEnum 0x%03x, data counter %08x, arrayBuf %d elemArryBuf %d vao %d texUnit %d\n",
             dumpsPrinted, s->FEnum, dataCounter, s->arrayBuf, s->elemArryBuf, s->vao, s->texUnit);
     fifo_check_print_array("Interleaved", FIFO_CHECK_NO_INDEX, &s->Interleaved);
     fifo_check_print_array("Color", FIFO_CHECK_NO_INDEX, &s->Color);
@@ -491,17 +491,17 @@ static void fifo_check_dump(MesaPTState *s, uint32_t dataCounter)
     fifo_check_print_array("Weight", FIFO_CHECK_NO_INDEX, &s->Weight);
     for (int attribute = 0; attribute < 2; attribute++)
         fifo_check_print_array("GenAttrib", attribute, &s->GenAttrib[attribute]);
-    fprintf(stderr, "qemu-3dfx fifo check:   last draw FEnum 0x%03x copied %d arrays\n", fifoCheckPushFEnum, fifoCheckPushCount);
+    fprintf(stderr, "fvm3dx fifo check:   last draw FEnum 0x%03x copied %d arrays\n", fifoCheckPushFEnum, fifoCheckPushCount);
     for (int pushIndex = 0; pushIndex < fifoCheckPushCount; pushIndex++) {
         const FifoCheckPush *push = &fifoCheckPushes[pushIndex];
-        fprintf(stderr, "qemu-3dfx fifo check:     copied %-14s %2d  bytesPerElement %d elements %d..%d words %d\n",
+        fprintf(stderr, "fvm3dx fifo check:     copied %-14s %2d  bytesPerElement %d elements %d..%d words %d\n",
                 push->arrayName, push->arrayIndex, push->bytesPerElement, push->firstElement, push->lastElement, push->wordsCopied);
     }
     for (int slot = 0; slot < fifoCheckStateChangeCount; slot++) {
         const FifoCheckStateChange *change = &fifoCheckStateChanges[slot];
         const uint32_t textureUnit = change->arrayKey >> FIFO_CHECK_TEXTURE_UNIT_SHIFT;
         const uint32_t arrayName = change->arrayKey & ((1U << FIFO_CHECK_TEXTURE_UNIT_SHIFT) - 1);
-        fprintf(stderr, "qemu-3dfx fifo check:   array %04x unit %u last set to %d by FEnum 0x%03x, %u switches\n",
+        fprintf(stderr, "fvm3dx fifo check:   array %04x unit %u last set to %d by FEnum 0x%03x, %u switches\n",
                 arrayName, textureUnit, change->enabled, change->switchingFEnum, change->switchCount);
     }
 }
@@ -614,7 +614,7 @@ static void bufo_diag_kvm_line(const char *what, BufoDiagKvmTime *measured)
     const double meanMs = (double)measured->totalNs / measured->count / BUFO_DIAG_NS_PER_MILLISECOND;
     const double longestMs = (double)measured->longestNs / BUFO_DIAG_NS_PER_MILLISECOND;
     const double totalMs = (double)measured->totalNs / BUFO_DIAG_NS_PER_MILLISECOND;
-    fprintf(stderr, "qemu-3dfx bufo:   region %-6s %6u x  mean %.3f ms  longest %.3f ms  together %.1f ms\n",
+    fprintf(stderr, "fvm3dx bufo:   region %-6s %6u x  mean %.3f ms  longest %.3f ms  together %.1f ms\n",
             what, measured->count, meanMs, longestMs, totalMs);
     measured->totalNs = 0;
     measured->longestNs = 0;
@@ -650,7 +650,7 @@ static int bufo_diag_add(const mapbufo_t *bufo)
 
     const char *targetName = tokglstr(added->target);
     const char *routeName = (added->zeroCopy)? "zero-copy":"copied";
-    fprintf(stderr, "qemu-3dfx bufo: new %-24s size %8u acc %04x hva %p gpa %p %s\n",
+    fprintf(stderr, "fvm3dx bufo: new %-24s size %8u acc %04x hva %p gpa %p %s\n",
             targetName, added->mapSize, added->access,
             (void *)added->hostAddress, (void *)added->guestAddress, routeName);
     return entry;
@@ -667,7 +667,7 @@ static void bufo_diag_report(const int64_t now_ns, const int force)
 
     const double elapsed_seconds = (double)elapsed_ns / BUFO_DIAG_NS_PER_SECOND;
     const double mapsPerSecond = bufoDiagMapCount / elapsed_seconds;
-    fprintf(stderr, "qemu-3dfx bufo: %u mappings in %.1f s (%.1f/s), %u of them a different buffer than the one before, %d combinations known, %u beyond the table\n",
+    fprintf(stderr, "fvm3dx bufo: %u mappings in %.1f s (%.1f/s), %u of them a different buffer than the one before, %d combinations known, %u beyond the table\n",
             bufoDiagMapCount, elapsed_seconds, mapsPerSecond, bufoDiagSwitchCount, bufoDiagEntryCount, bufoDiagBeyondSlots);
 
     for (int i = 0; i < bufoDiagEntryCount; i++) {
@@ -676,7 +676,7 @@ static void bufo_diag_report(const int64_t now_ns, const int force)
             continue;
         const char *targetName = tokglstr(known->target);
         const char *routeName = (known->zeroCopy)? "zero-copy":"copied";
-        fprintf(stderr, "qemu-3dfx bufo:   %-24s size %8u acc %04x hva %p %-9s %u x\n",
+        fprintf(stderr, "fvm3dx bufo:   %-24s size %8u acc %04x hva %p %-9s %u x\n",
                 targetName, known->mapSize, known->access, (void *)known->hostAddress, routeName, known->mapCount);
     }
 
@@ -687,7 +687,7 @@ static void bufo_diag_report(const int64_t now_ns, const int force)
     bufoDiagReuseCountReported = reuseCount;
     const int isRegionKept = MGLKeepGuestBufoEnabled();
     const char *keptState = (isRegionKept)? "on":"off";
-    fprintf(stderr, "qemu-3dfx bufo:   region kept      %s, taken over again %u x\n", keptState, reusedInWindow);
+    fprintf(stderr, "fvm3dx bufo:   region kept      %s, taken over again %u x\n", keptState, reusedInWindow);
 
     /* The table stands across windows on purpose: a combination that comes back every frame
      * then prints its "new" line once and shows up in the count, and one that never comes
@@ -803,7 +803,7 @@ static void mesa_fps_count(const MesaFrameKind kind)
             char stamp[16];
             strftime(stamp, sizeof(stamp), "%H:%M:%S", localtime(&wall_clock));
             if (frames[i])
-                fprintf(stderr, "qemu-3dfx fps: %s %-16s %6.1f   (%u in %.2f s, host clock, last %dx%d)\n",
+                fprintf(stderr, "fvm3dx fps: %s %-16s %6.1f   (%u in %.2f s, host clock, last %dx%d)\n",
                         stamp, kind_name[i], frames[i] / elapsed_seconds, frames[i], elapsed_seconds,
                         mesa_fps_last_width, mesa_fps_last_height);
             frames[i] = 0;

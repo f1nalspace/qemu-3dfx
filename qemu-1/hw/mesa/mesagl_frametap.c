@@ -166,7 +166,7 @@ static void frametap_diag_report(const int64_t now_ns, const double nanoseconds_
     const double framebuffer_switches_per_frame = frametapDiag.framebuffer_switches / frames;
     const double guest_programs_per_frame = frametapDiag.guest_programs / frames;
     const double guest_vertex_arrays_per_frame = frametapDiag.guest_vertex_arrays / frames;
-    fprintf(stderr, "qemu-3dfx frametap diag: %u frames, ns per frame:%s = %.0f | %u checks, %.0f ns each | per frame toggled %.2f fb %.2f program %.2f vao %.2f\n",
+    fprintf(stderr, "fvm3dx frametap diag: %u frames, ns per frame:%s = %.0f | %u checks, %.0f ns each | per frame toggled %.2f fb %.2f program %.2f vao %.2f\n",
         frametapDiag.frames, steps, total_ns, frametapDiag.checks, check_ns, toggled_per_frame, framebuffer_switches_per_frame, guest_programs_per_frame, guest_vertex_arrays_per_frame);
 
     /* The report runs in the middle of a present, whose next step still measures from last_ticks. */
@@ -297,7 +297,7 @@ void frametap_init(void *page)
     frametap.page->level = frametap.level;
 
     if (frametap.level != FRAMETAP_LEVEL_OFF)
-        fprintf(stderr, "qemu-3dfx frametap: level %d, page at 0x%08x, diag %d\n", frametap.level, FRAMETAP_PAGE_BASE, frametapDiag.enabled);
+        fprintf(stderr, "fvm3dx frametap: level %d, page at 0x%08x, diag %d\n", frametap.level, FRAMETAP_PAGE_BASE, frametapDiag.enabled);
 }
 
 /* WGL only hands out extension functions, so there the table InitMesaGL() filled has to step in for the core ones. */
@@ -479,7 +479,7 @@ static int frametap_build_program(FrametapContext *context, const GLint atlas_un
     if (!built) {
         char info_log[FRAMETAP_INFO_LOG_SIZE] = { 0 };
         PFN_CALL(glGetProgramInfoLog(context->program, sizeof(info_log) - 1, NULL, info_log));
-        fprintf(stderr, "qemu-3dfx frametap: program did not build (vertex %d, fragment %d, link %d) %s\n", vertex_compiled, fragment_compiled, link_status, info_log);
+        fprintf(stderr, "fvm3dx frametap: program did not build (vertex %d, fragment %d, link %d) %s\n", vertex_compiled, fragment_compiled, link_status, info_log);
         return 0;
     }
 
@@ -561,7 +561,7 @@ static void frametap_create(FrametapContext *context, const int context_index)
 
     const char *profile_name = (context->core_profile)? "core":"compatibility";
     const char *overlay_state = (built)? "overlay on":"overlay off";
-    fprintf(stderr, "qemu-3dfx frametap: context %p %s profile, atlas on unit %d, program %u -> %s\n", context->key, profile_name, atlas_unit, context->program, overlay_state);
+    fprintf(stderr, "fvm3dx frametap: context %p %s profile, atlas on unit %d, program %u -> %s\n", context->key, profile_name, atlas_unit, context->program, overlay_state);
 }
 
 static FrametapContext *frametap_find_context(const void *key)
