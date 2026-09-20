@@ -4,7 +4,6 @@
 /qemu-*.*/
 /build/
 wrappers/*/build/
-tools/*/build/
 
 # patch(1) leftovers
 *.orig

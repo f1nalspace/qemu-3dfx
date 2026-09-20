@@ -779,6 +779,7 @@ void __stdcall (*setConfigRes)(const int res, void *swap12);
 void __stdcall (*setConfigOffset)(const int offset_x, const int offset_y);
 void __stdcall (*setConfigWindow)(const int width, const int height, const int offset_x);
 void __stdcall (*setConfigWindowOffset)(const int width, const int height, const int offset_x, const int offset_y);
+void __stdcall (*setConfigPresentHook)(void (*present_hook)(void));
 static int SDLSignValid(const uint32_t sign)
 {
     static uint32_t SDLSign;
@@ -808,6 +809,15 @@ void conf_glide2x_window(const int width, const int height, const int offset_x, 
         setConfigWindowOffset(width, height, offset_x, offset_y);
     else if (setConfigWindow)
         setConfigWindow(width, height, offset_x);
+}
+
+/* OpenGLide calls the hook once a frame is complete and right before it swaps, NULL takes it away again.
+ * An OpenGLide without setConfigPresentHook swaps as before and simply shows no frametap overlay.
+ */
+void conf_glide2x_present_hook(void (*present_hook)(void))
+{
+    if (setConfigPresentHook)
+        setConfigPresentHook(present_hook);
 }
 
 void cwnd_glide2x(void *swnd, void *nwnd, void *opaque)
@@ -884,6 +894,7 @@ int init_glide2x(const char *dllname)
     setConfigOffset = (void (*)(const int, const int))GetProcAddress(hDll, "_setConfigOffset@8");
     setConfigWindow = (void (*)(const int, const int, const int))GetProcAddress(hDll, "_setConfigWindow@12");
     setConfigWindowOffset = (void (*)(const int, const int, const int, const int))GetProcAddress(hDll, "_setConfigWindowOffset@16");
+    setConfigPresentHook = (void (*)(void (*)(void)))GetProcAddress(hDll, "_setConfigPresentHook@4");
 #endif
 #if defined(CONFIG_LINUX) || defined(CONFIG_DARWIN)
     const char *soname[] = {
@@ -915,6 +926,7 @@ int init_glide2x(const char *dllname)
     setConfigOffset = (void (*)(const int, const int))dlsym(hDll, "setConfigOffset");
     setConfigWindow = (void (*)(const int, const int, const int))dlsym(hDll, "setConfigWindow");
     setConfigWindowOffset = (void (*)(const int, const int, const int, const int))dlsym(hDll, "setConfigWindowOffset");
+    setConfigPresentHook = (void (*)(void (*)(void)))dlsym(hDll, "setConfigPresentHook");
 #endif
     
     if (!hDll) {

@@ -133,6 +133,7 @@ void glide_renderer_stat(const int);
 void doGlideFunc(int, uint32_t *, uintptr_t *, uintptr_t *, int);
 void conf_glide2x(const uint32_t, const int, const int, const int);
 void conf_glide2x_window(const int, const int, const int, const int);
+void conf_glide2x_present_hook(void (*)(void));
 void glide_window_rescale(void);
 void glide_context_restore(void);
 unsigned int glide_context_restore_count(void);

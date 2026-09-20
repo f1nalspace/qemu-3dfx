@@ -23,6 +23,7 @@
 #include "ui/console.h"
 
 #include "mesagl_impl.h"
+#include "mesagl_frametap.h"
 
 #define DPRINTF(fmt, ...) \
     do { fprintf(stderr, "glcntx: " fmt "\n" , ## __VA_ARGS__); } while(0)
@@ -538,6 +539,7 @@ static void TmpContextPurge(void)
     if ((n == 1) && ctx[--n]) {
         if (current_context == ctx[n])
             MGLRememberCurrent(NULL, None, None, NULL);
+        MesaFrametapForget(ctx[n]);
         glXDestroyContext(dpy, ctx[n]);
         DPRINTF("MESAGL curr %d cntx [%p] purge %d", n, ctx[n], 1);
         ctx[n] = 0;
@@ -576,12 +578,14 @@ void MGLDeleteContext(int level)
     int n = (level)? ((level % MAX_LVLCNTX)? (level % MAX_LVLCNTX):1):level;
     MGLReleaseCurrent();
     if (n) {
+        MesaFrametapForget(ctx[n]);
         glXDestroyContext(dpy, ctx[n]);
         ctx[n] = 0;
     }
     else {
         for (int i = MAX_LVLCNTX; i > 1;) {
             if (ctx[--i]) {
+                MesaFrametapForget(ctx[i]);
                 glXDestroyContext(dpy, ctx[i]);
                 ctx[i] = 0;
             }
@@ -596,6 +600,7 @@ void MGLWndRelease(void)
     if (win) {
         if (ctx[0]) {
             MGLReleaseCurrent();
+            MesaFrametapForget(ctx[0]);
             glXDestroyContext(dpy, ctx[0]);
         }
         RestoreHostGammaRamp();
@@ -622,6 +627,7 @@ int MGLCreateContext(uint32_t gDC)
         MGLReleaseCurrent();
         for (i = MAX_LVLCNTX; i > 1;) {
             if (ctx[--i]) {
+                MesaFrametapForget(ctx[i]);
                 glXDestroyContext(dpy, ctx[i]);
                 ctx[i] = 0;
             }
@@ -672,8 +678,24 @@ int MGLSwapBuffers(void)
     mesa_gl_takeover();
     MGLActivateHandler(1, 0);
     MesaBlitScale();
+    const GLXContext presenting_context = glXGetCurrentContext();
+    MesaFrametapSwap(presenting_context);
     glXSwapBuffers(dpy, win);
     return 1;
+}
+
+/* Runs before a guest's glFlush or glFinish, the present of a guest that never swaps. */
+void MGLFrametapFlush(void)
+{
+    const GLXContext current_context = glXGetCurrentContext();
+    MesaFrametapFlush(current_context);
+}
+
+/* The guest's glDebugMessageInsertARB that names its API arrives on the context it is about. */
+void MGLFrametapGuestApi(const char *api_name, const int name_length)
+{
+    const GLXContext current_context = glXGetCurrentContext();
+    MesaFrametapGuestApi(current_context, api_name, name_length);
 }
 
 static int MGLPresetPixelFormat(void)
@@ -973,6 +995,7 @@ void MGLFuncHandler(const char *name)
                 if (CompareAttribArray((const int *)&argsp[2])) {
                     for (i = MAX_LVLCNTX; i > 0;) {
                         if (ctx[--i]) {
+                            MesaFrametapForget(ctx[i]);
                             glXDestroyContext(dpy, ctx[i]);
                             ctx[i] = 0;
                         }
@@ -986,6 +1009,7 @@ void MGLFuncHandler(const char *name)
                 if (i == MAX_LVLCNTX) {
                     if (current_context == ctx[1])
                         MGLRememberCurrent(NULL, None, None, NULL);
+                    MesaFrametapForget(ctx[1]);
                     glXDestroyContext(dpy, ctx[1]);
                     for (i = 1; i < (MAX_LVLCNTX - 1); i++)
                         ctx[i] = ctx[i + 1];
@@ -1097,6 +1121,7 @@ void MGLFuncHandler(const char *name)
         i = argsp[0] & (MAX_PBUFFER - 1);
         if (current_context == PBRC[i])
             MGLRememberCurrent(NULL, None, None, NULL);
+        MesaFrametapForget(PBRC[i]);
         glXDestroyContext(dpy, PBRC[i]);
         glXDestroyPbuffer(dpy, PBDC[i]);
         PBRC[i] = 0; PBDC[i] = 0;

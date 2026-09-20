@@ -170,7 +170,7 @@ static void flight_at_exit(void)
     flight_flush(FLIGHT_FLUSH_EXIT);
     fclose(flight_file);
     flight_file = NULL;
-    fprintf(stderr, "qemu-3dfx flight: %" PRIu64 " events recorded, written at exit\n", flight_events_recorded);
+    fprintf(stderr, "fvm3dx flight: %" PRIu64 " events recorded, written at exit\n", flight_events_recorded);
 }
 
 void flight_init(void)
@@ -191,7 +191,7 @@ void flight_init(void)
 
     flight_events = g_try_malloc(event_bytes);
     if (!flight_events) {
-        fprintf(stderr, "qemu-3dfx flight: %" PRIu64 " MB not available, recorder stays off\n", megabytes);
+        fprintf(stderr, "fvm3dx flight: %" PRIu64 " MB not available, recorder stays off\n", megabytes);
         return;
     }
     /* Every page is touched here, so that recording never waits for the host kernel to hand
@@ -203,7 +203,7 @@ void flight_init(void)
 
     flight_file = fopen(file_name, "wb");
     if (!flight_file) {
-        fprintf(stderr, "qemu-3dfx flight: cannot open %s, recorder stays off\n", file_name);
+        fprintf(stderr, "fvm3dx flight: cannot open %s, recorder stays off\n", file_name);
         g_free(flight_events);
         g_free(flight_fifo_call_counts);
         flight_events = NULL;
@@ -217,7 +217,7 @@ void flight_init(void)
     flight_flush(FLIGHT_FLUSH_START);
     atexit(flight_at_exit);
 
-    fprintf(stderr, "qemu-3dfx flight: %s, level %d, %" PRIu64 " MB, room for %" PRIu64 " events\n",
+    fprintf(stderr, "fvm3dx flight: %s, level %d, %" PRIu64 " MB, room for %" PRIu64 " events\n",
             file_name, level, (uint64_t)(event_bytes / FLIGHT_BYTES_PER_MEGABYTE), event_capacity);
     /* Last, because this is what switches every hook on. */
     flight_level = level;

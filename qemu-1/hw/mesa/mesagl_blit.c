@@ -456,7 +456,7 @@ static void blit_diag(const int path, const int fullscreen, const int *v,
     pixel_guest_fbo = probe_guest_framebuffer;
 
     snprintf(line, sizeof(line),
-        "qemu-3dfx blit: %-8s fullscreen=%d guest=%dx%d surface=%dx%d window=%dx%d context=%d scaleroff=%d "
+        "fvm3dx blit: %-8s fullscreen=%d guest=%dx%d surface=%dx%d window=%dx%d context=%d scaleroff=%d "
         "viewport=%d,%d %dx%d read=%d(0x%04x) draw=%d(0x%04x) samples=%d "
         "pixel0=%06x pixelfbo=%06x error=0x%04x",
         blit_path_name(path), fullscreen, v[0], v[1] & 0x7FFFU, v[2], v[3],
@@ -751,7 +751,7 @@ static void scaler_diag(const char *what, const int *v, const int drawable_conte
     if (!blit_diagnostics_enabled())
         return;
     snprintf(line, sizeof(line),
-        "qemu-3dfx scaler: %-16s guest=%dx%d surface=%dx%d context=%d fbo=%d fullscreen=%d "
+        "fvm3dx scaler: %-16s guest=%dx%d surface=%dx%d context=%d fbo=%d fullscreen=%d "
         "windowguest=%d hasswap=%d scaleroff=%d applied=%d box=%d,%d %dx%d",
         what, v[0], v[1] & 0x7FFFU, v[2], v[3], drawable_context, framebuffer_binding,
         fullscreen, windowed_guest, blit.has_swap, RenderScalerOff(), acted,
@@ -821,6 +821,13 @@ static void blit_paint_bars_without_swap(void)
         blit_restore_savemap(&save_map);
     }
     PFN_CALL(glUseProgram(last_prog));
+}
+
+/* The drawable as of the last MesaDrawableRecheck(). MesaBlitScale() runs it on every swap, right before frametap draws into the same frame. */
+void MesaBlitDrawableSize(int *width, int *height)
+{
+    *width = blit.last_drawable_width;
+    *height = blit.last_drawable_height;
 }
 
 void MesaDrawableRecheck(void)

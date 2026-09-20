@@ -223,7 +223,7 @@ diff -Nru ../orig/qemu-9.2.2/system/vl.c ./system/vl.c
 +{
 +    const char rev_[ALIGNED(1)]
 +        ;
-+    printf("  featuring qemu-3dfx@%s"__TIME__" "__DATE__" build\n", rev_);
++    printf("  featuring fvm3dx@%s"__TIME__" "__DATE__" build\n", rev_);
 +}
 +
  static void version(void)
@@ -384,7 +384,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    }
 +    memcpy(last_line, line, sizeof(line));
 +
-+    fprintf(stderr, "qemu-3dfx view: %-30s vollbild=%d gast=%dx%d fenster=%dx%d flaeche=%dx%d\n",
++    fprintf(stderr, "fvm3dx view: %-30s vollbild=%d gast=%dx%d fenster=%dx%d flaeche=%dx%d\n",
 +            what, gui_fullscreen, surface_w, surface_h,
 +            window_width, window_height, drawable_width, drawable_height);
 +}
@@ -396,7 +396,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    if (grab_diagnostics_enabled()) {
 +        struct sdl2_console *scon = &sdl2_console[0];
 +        int sdl_holds = (scon && scon->real_window)? SDL_GetWindowGrab(scon->real_window):-1;
-+        fprintf(stderr, "qemu-3dfx grab: %-30s grab=%d sdl=%d rel=%d fullscreen=%d absolute=%d remembered=%d%s\n",
++        fprintf(stderr, "fvm3dx grab: %-30s grab=%d sdl=%d rel=%d fullscreen=%d absolute=%d remembered=%d%s\n",
 +                what, gui_grab, sdl_holds, SDL_GetRelativeMouseMode(),
 +                gui_fullscreen, absolute_enabled, fxui_grab_val(0), grab_caller);
 +        grab_caller[0] = '\0';
@@ -464,7 +464,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +     * do nothing with it -- and that is what a lost pointer looks like. docs/LOG.md [408].
 +     */
 +    if (grab_diagnostics_enabled()) {
-+        fprintf(stderr, "qemu-3dfx grab: %-30s fokus=%s relativ=%d %s\n", what,
++        fprintf(stderr, "fvm3dx grab: %-30s fokus=%s relativ=%d %s\n", what,
 +                (focus_window == scon->real_window)? "ja":"nein", relative_result,
 +                (relative_result)? SDL_GetError():"");
 +    }
@@ -482,13 +482,13 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    sdl_holds = SDL_GetWindowGrab(scon->real_window);
 +    if (gui_grab && !sdl_holds) {
 +        if (grab_diagnostics_enabled()) {
-+            fprintf(stderr, "qemu-3dfx grab: %-30s SDL did not hold the grab -- re-asserted\n", what);
++            fprintf(stderr, "fvm3dx grab: %-30s SDL did not hold the grab -- re-asserted\n", what);
 +        }
 +        SDL_SetWindowGrab(scon->real_window, SDL_TRUE);
 +    }
 +    else if (!gui_grab && sdl_holds) {
 +        if (grab_diagnostics_enabled()) {
-+            fprintf(stderr, "qemu-3dfx grab: %-30s SDL still held the grab -- released\n", what);
++            fprintf(stderr, "fvm3dx grab: %-30s SDL still held the grab -- released\n", what);
 +        }
 +        SDL_SetWindowGrab(scon->real_window, SDL_FALSE);
 +    }
@@ -500,7 +500,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    relative_is_on = SDL_GetRelativeMouseMode();
 +    if (!gui_grab && relative_is_on) {
 +        if (grab_diagnostics_enabled()) {
-+            fprintf(stderr, "qemu-3dfx grab: %-30s relative mode ran without a grab -- off\n", what);
++            fprintf(stderr, "fvm3dx grab: %-30s relative mode ran without a grab -- off\n", what);
 +        }
 +        SDL_SetRelativeMouseMode(SDL_FALSE);
 +    }

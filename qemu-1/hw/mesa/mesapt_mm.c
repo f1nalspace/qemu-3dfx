@@ -25,6 +25,7 @@
 
 #include "mesagl_impl.h"
 #include "mesagl_flight.h"
+#include "mesagl_frametap.h"
 
 #define DEBUG_MESAPT
 
@@ -54,6 +55,10 @@ typedef struct MesaPTState
 
     MemoryRegion fbtm_ram;
     uint8_t *fbtm_ptr;
+    MemoryRegion frametap_ram;
+    uint8_t *frametap_ptr;
+    /* Read on every draw call, so the check stays a field instead of a call while frametap is off. */
+    int frametap_on;
 
     uint32_t FEnum;
     uintptr_t FRet;
@@ -461,7 +466,7 @@ static void PushVertexArray(MesaPTState *s, const void *pshm, int start, int end
 static void fifo_check_print_array(const char *arrayName, int arrayIndex, const vtxarry_t *varry)
 {
     const int hasPointer = (varry->ptr != NULL)? 1:0;
-    fprintf(stderr, "qemu-3dfx fifo check:   %-14s %2d  enable %d ptr %d client %d size %04x type %04x stride %d\n",
+    fprintf(stderr, "fvm3dx fifo check:   %-14s %2d  enable %d ptr %d client %d size %04x type %04x stride %d\n",
             arrayName, arrayIndex, varry->enable, hasPointer, varry->client, varry->size, varry->type, varry->stride);
 }
 
@@ -471,7 +476,7 @@ static void fifo_check_dump(MesaPTState *s, uint32_t dataCounter)
     if (!fifo_check_enabled() || (dumpsPrinted >= FIFO_CHECK_DUMP_LIMIT))
         return;
     dumpsPrinted++;
-    fprintf(stderr, "qemu-3dfx fifo check: leak %d at FEnum 0x%03x, data counter %08x, arrayBuf %d elemArryBuf %d vao %d texUnit %d\n",
+    fprintf(stderr, "fvm3dx fifo check: leak %d at FEnum 0x%03x, data counter %08x, arrayBuf %d elemArryBuf %d vao %d texUnit %d\n",
             dumpsPrinted, s->FEnum, dataCounter, s->arrayBuf, s->elemArryBuf, s->vao, s->texUnit);
     fifo_check_print_array("Interleaved", FIFO_CHECK_NO_INDEX, &s->Interleaved);
     fifo_check_print_array("Color", FIFO_CHECK_NO_INDEX, &s->Color);
@@ -486,17 +491,17 @@ static void fifo_check_dump(MesaPTState *s, uint32_t dataCounter)
     fifo_check_print_array("Weight", FIFO_CHECK_NO_INDEX, &s->Weight);
     for (int attribute = 0; attribute < 2; attribute++)
         fifo_check_print_array("GenAttrib", attribute, &s->GenAttrib[attribute]);
-    fprintf(stderr, "qemu-3dfx fifo check:   last draw FEnum 0x%03x copied %d arrays\n", fifoCheckPushFEnum, fifoCheckPushCount);
+    fprintf(stderr, "fvm3dx fifo check:   last draw FEnum 0x%03x copied %d arrays\n", fifoCheckPushFEnum, fifoCheckPushCount);
     for (int pushIndex = 0; pushIndex < fifoCheckPushCount; pushIndex++) {
         const FifoCheckPush *push = &fifoCheckPushes[pushIndex];
-        fprintf(stderr, "qemu-3dfx fifo check:     copied %-14s %2d  bytesPerElement %d elements %d..%d words %d\n",
+        fprintf(stderr, "fvm3dx fifo check:     copied %-14s %2d  bytesPerElement %d elements %d..%d words %d\n",
                 push->arrayName, push->arrayIndex, push->bytesPerElement, push->firstElement, push->lastElement, push->wordsCopied);
     }
     for (int slot = 0; slot < fifoCheckStateChangeCount; slot++) {
         const FifoCheckStateChange *change = &fifoCheckStateChanges[slot];
         const uint32_t textureUnit = change->arrayKey >> FIFO_CHECK_TEXTURE_UNIT_SHIFT;
         const uint32_t arrayName = change->arrayKey & ((1U << FIFO_CHECK_TEXTURE_UNIT_SHIFT) - 1);
-        fprintf(stderr, "qemu-3dfx fifo check:   array %04x unit %u last set to %d by FEnum 0x%03x, %u switches\n",
+        fprintf(stderr, "fvm3dx fifo check:   array %04x unit %u last set to %d by FEnum 0x%03x, %u switches\n",
                 arrayName, textureUnit, change->enabled, change->switchingFEnum, change->switchCount);
     }
 }
@@ -609,7 +614,7 @@ static void bufo_diag_kvm_line(const char *what, BufoDiagKvmTime *measured)
     const double meanMs = (double)measured->totalNs / measured->count / BUFO_DIAG_NS_PER_MILLISECOND;
     const double longestMs = (double)measured->longestNs / BUFO_DIAG_NS_PER_MILLISECOND;
     const double totalMs = (double)measured->totalNs / BUFO_DIAG_NS_PER_MILLISECOND;
-    fprintf(stderr, "qemu-3dfx bufo:   region %-6s %6u x  mean %.3f ms  longest %.3f ms  together %.1f ms\n",
+    fprintf(stderr, "fvm3dx bufo:   region %-6s %6u x  mean %.3f ms  longest %.3f ms  together %.1f ms\n",
             what, measured->count, meanMs, longestMs, totalMs);
     measured->totalNs = 0;
     measured->longestNs = 0;
@@ -645,7 +650,7 @@ static int bufo_diag_add(const mapbufo_t *bufo)
 
     const char *targetName = tokglstr(added->target);
     const char *routeName = (added->zeroCopy)? "zero-copy":"copied";
-    fprintf(stderr, "qemu-3dfx bufo: new %-24s size %8u acc %04x hva %p gpa %p %s\n",
+    fprintf(stderr, "fvm3dx bufo: new %-24s size %8u acc %04x hva %p gpa %p %s\n",
             targetName, added->mapSize, added->access,
             (void *)added->hostAddress, (void *)added->guestAddress, routeName);
     return entry;
@@ -662,7 +667,7 @@ static void bufo_diag_report(const int64_t now_ns, const int force)
 
     const double elapsed_seconds = (double)elapsed_ns / BUFO_DIAG_NS_PER_SECOND;
     const double mapsPerSecond = bufoDiagMapCount / elapsed_seconds;
-    fprintf(stderr, "qemu-3dfx bufo: %u mappings in %.1f s (%.1f/s), %u of them a different buffer than the one before, %d combinations known, %u beyond the table\n",
+    fprintf(stderr, "fvm3dx bufo: %u mappings in %.1f s (%.1f/s), %u of them a different buffer than the one before, %d combinations known, %u beyond the table\n",
             bufoDiagMapCount, elapsed_seconds, mapsPerSecond, bufoDiagSwitchCount, bufoDiagEntryCount, bufoDiagBeyondSlots);
 
     for (int i = 0; i < bufoDiagEntryCount; i++) {
@@ -671,7 +676,7 @@ static void bufo_diag_report(const int64_t now_ns, const int force)
             continue;
         const char *targetName = tokglstr(known->target);
         const char *routeName = (known->zeroCopy)? "zero-copy":"copied";
-        fprintf(stderr, "qemu-3dfx bufo:   %-24s size %8u acc %04x hva %p %-9s %u x\n",
+        fprintf(stderr, "fvm3dx bufo:   %-24s size %8u acc %04x hva %p %-9s %u x\n",
                 targetName, known->mapSize, known->access, (void *)known->hostAddress, routeName, known->mapCount);
     }
 
@@ -682,7 +687,7 @@ static void bufo_diag_report(const int64_t now_ns, const int force)
     bufoDiagReuseCountReported = reuseCount;
     const int isRegionKept = MGLKeepGuestBufoEnabled();
     const char *keptState = (isRegionKept)? "on":"off";
-    fprintf(stderr, "qemu-3dfx bufo:   region kept      %s, taken over again %u x\n", keptState, reusedInWindow);
+    fprintf(stderr, "fvm3dx bufo:   region kept      %s, taken over again %u x\n", keptState, reusedInWindow);
 
     /* The table stands across windows on purpose: a combination that comes back every frame
      * then prints its "new" line once and shows up in the count, and one that never comes
@@ -798,7 +803,7 @@ static void mesa_fps_count(const MesaFrameKind kind)
             char stamp[16];
             strftime(stamp, sizeof(stamp), "%H:%M:%S", localtime(&wall_clock));
             if (frames[i])
-                fprintf(stderr, "qemu-3dfx fps: %s %-16s %6.1f   (%u in %.2f s, host clock, last %dx%d)\n",
+                fprintf(stderr, "fvm3dx fps: %s %-16s %6.1f   (%u in %.2f s, host clock, last %dx%d)\n",
                         stamp, kind_name[i], frames[i] / elapsed_seconds, frames[i], elapsed_seconds,
                         mesa_fps_last_width, mesa_fps_last_height);
             frames[i] = 0;
@@ -1352,6 +1357,8 @@ static void processArgs(MesaPTState *s)
             break;
         case FEnum_glDrawArrays:
         case FEnum_glDrawArraysEXT:
+            if (s->frametap_on)
+                MesaFrametapWindowDraw();
             if (s->arg[2] && (s->vao == 0)) {
                 s->elemMax = ((s->arg[1] + s->arg[2] - 1) > s->elemMax)? (s->arg[1] + s->arg[2] - 1):s->elemMax;
                 PushVertexArray(s, s->hshm, s->arg[1], s->arg[1] + s->arg[2] - 1);
@@ -1367,6 +1374,8 @@ static void processArgs(MesaPTState *s)
         case FEnum_glDrawElementsInstancedARB:
         case FEnum_glDrawElementsInstancedBaseInstance:
         case FEnum_glDrawElementsInstancedEXT:
+            if (s->frametap_on)
+                MesaFrametapWindowDraw();
             s->parg[3] = s->arg[3];
             if (s->elemArryBuf == 0) {
                 s->datacb = ALIGNED(s->arg[1] * szgldata(0, s->arg[2]));
@@ -2083,9 +2092,21 @@ static void processArgs(MesaPTState *s)
             break;
         case FEnum_glBlitFramebuffer:
         case FEnum_glBlitFramebufferEXT:
+            MesaFrametapWindowBlit();
+            MesaRenderScaler(s->FEnum, s->arg);
+            break;
         case FEnum_glScissor:
         case FEnum_glViewport:
             MesaRenderScaler(s->FEnum, s->arg);
+            break;
+        case FEnum_glFinish:
+        case FEnum_glFlush:
+            /* Before the guest's own flush, so that it carries the overlay of a guest that presents without a swap. */
+            MGLFrametapFlush();
+            break;
+        case FEnum_glEnd:
+            if (s->frametap_on)
+                MesaFrametapWindowDraw();
             break;
         case FEnum_glDebugMessageInsertARB:
             s->datacb = ALIGNED(s->arg[4]);
@@ -2094,6 +2115,10 @@ static void processArgs(MesaPTState *s)
                 (s->arg[2] == GL_DEBUG_SEVERITY_LOW_ARB) &&
                 (sizeof(uint32_t) == s->arg[4]))
                 MGLMouseWarp(*(uint32_t *)(s->hshm));
+            if ((s->arg[0] == GL_DEBUG_SOURCE_APPLICATION_ARB) &&
+                (s->arg[1] == GL_DEBUG_TYPE_OTHER_ARB) &&
+                (s->arg[2] == FRAMETAP_API_MESSAGE_ID))
+                MGLFrametapGuestApi((const char *)(s->hshm), s->arg[4]);
             ASSERT_ATTEST(((char *)(s->hshm)));
             DPRINTF_COND(((s->arg[0] == GL_DEBUG_SOURCE_OTHER_ARB) &&
                 (s->arg[1] == GL_DEBUG_TYPE_OTHER_ARB) &&
@@ -3036,6 +3061,9 @@ static void mesapt_init(Object *obj)
     s->fbtm_ptr = memory_region_get_ram_ptr(&s->fbtm_ram);
     memory_region_add_subregion(sysmem, MESA_FIFO_BASE, &s->fifo_ram);
     memory_region_add_subregion(sysmem, MESA_FBTM_BASE, &s->fbtm_ram);
+    memory_region_init_ram(&s->frametap_ram, NULL, "frametap", FRAMETAP_PAGE_SIZE, &error_fatal);
+    s->frametap_ptr = memory_region_get_ram_ptr(&s->frametap_ram);
+    memory_region_add_subregion(sysmem, FRAMETAP_PAGE_BASE, &s->frametap_ram);
 
     memory_region_init_io(&s->iomem, obj, &mesapt_ops, s, TYPE_MESAPT, PAGE_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
@@ -3046,6 +3074,8 @@ static void mesapt_realize(DeviceState *dev, Error **errp)
     MesaPTState *s = MESAPT(dev);
     mesastat(&s->perfs);
     flight_init();
+    frametap_init(s->frametap_ptr);
+    s->frametap_on = MesaFrametapEnabled();
 }
 
 static void mesapt_finalize(Object *obj)
