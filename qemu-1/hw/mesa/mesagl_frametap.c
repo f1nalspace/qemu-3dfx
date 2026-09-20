@@ -84,7 +84,7 @@ enum {
     if (!p_##f) \
         p_##f = (p)frametap_get_proc(#f, FEnum_##f)
 
-/* A breakdown of frametap's own cost, switched on with QEMU_3DFX_FRAMETAP_DIAG=1 next to a level: rdtsc between the steps of a present, summed up, one line every five seconds.
+/* A breakdown of frametap's own cost, switched on with FVM3DX_FRAMETAP_DIAG=1 next to a level: rdtsc between the steps of a present, summed up, one line every five seconds.
  * Nothing is written per frame (docs/LOG.md [901], [902] in the project repository).
  */
 #define FRAMETAP_DIAG_REPORT_INTERVAL_NS            (5LL * 1000LL * 1000LL * 1000LL)
@@ -283,11 +283,11 @@ static struct {
 
 void frametap_init(void *page)
 {
-    const char *setting = getenv("QEMU_3DFX_FRAMETAP");
+    const char *setting = getenv("FVM3DX_FRAMETAP");
     const int requested_level = (setting)? atoi(setting):FRAMETAP_LEVEL_OFF;
     const int bounded_level = MIN(requested_level, FRAMETAP_LEVEL_API_RATE_AND_COST);
     frametap.level = MAX(bounded_level, FRAMETAP_LEVEL_OFF);
-    const char *diag_setting = getenv("QEMU_3DFX_FRAMETAP_DIAG");
+    const char *diag_setting = getenv("FVM3DX_FRAMETAP_DIAG");
     frametapDiag.enabled = (frametap.level != FRAMETAP_LEVEL_OFF) && diag_setting && (diag_setting[0] != '0');
 
     frametap.page = page;

@@ -64,7 +64,7 @@ static int bufo_accel_en(void)
  * Adding and removing it costs 4.7 ms per frame for WineD3D's 8 MB PBO, which it maps at the same host address every frame (docs/LOG.md [808]).
  * There is never more than one kept region, and it is removed before any other region is added.
  * The set of regions in KVM is therefore always one the old code had at some point, and no two of them overlap.
- * QEMU_3DFX_BUFO_KEEP=0 removes the region at every unmap again.
+ * FVM3DX_BUFO_KEEP=0 removes the region at every unmap again.
  */
 typedef struct {
     uint64_t guestAddress, size;
@@ -79,7 +79,7 @@ int MGLKeepGuestBufoEnabled(void)
 {
     static int enabled = -1;
     if (enabled == -1) {
-        const char *setting = getenv("QEMU_3DFX_BUFO_KEEP");
+        const char *setting = getenv("FVM3DX_BUFO_KEEP");
         enabled = (setting && setting[0] == '0')? 0:1;
     }
     return enabled;
@@ -394,7 +394,7 @@ struct xgamma {
  * intrusion on the whole screen. It is off by default now and has to be asked
  * for explicitly:
  *
- *     QEMU_3DFX_HOST_GAMMA=1
+ *     FVM3DX_HOST_GAMMA=1
  *
  * Second point: when it is asked for, the user's original ramp is saved and
  * written back, instead of overwriting it with a computed identity ramp. Doing
@@ -405,7 +405,7 @@ static int HostGammaPassthroughEnabled(void)
     static int alreadyChecked, isEnabled;
 
     if (!alreadyChecked) {
-        const char *setting = getenv("QEMU_3DFX_HOST_GAMMA");
+        const char *setting = getenv("FVM3DX_HOST_GAMMA");
         isEnabled = (setting && (setting[0] == '1'))? 1:0;
         alreadyChecked = 1;
     }

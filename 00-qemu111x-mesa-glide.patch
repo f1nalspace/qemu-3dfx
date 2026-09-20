@@ -332,16 +332,16 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +/* qemu-3dfx: the pointer grab is dropped in half a dozen places and taken in as many, and
 + * sdl_grab_start() even declines silently when the window has no input focus. When it
 + * goes missing there is nothing to look at afterwards, so this writes down every
-+ * transition. Switched on with QEMU_3DFX_GRAB_DIAG=1. See docs/LOG.md.
++ * transition. Switched on with FVM3DX_GRAB_DIAG=1. See docs/LOG.md.
 + */
 +static int grab_diagnostics_enabled(void)
 +{
 +    static int enabled = -1;
 +
 +    if (enabled < 0) {
-+        const char *value = getenv("QEMU_3DFX_UI_DIAG");
++        const char *value = getenv("FVM3DX_UI_DIAG");
 +        if (!value) {
-+            value = getenv("QEMU_3DFX_GRAB_DIAG");
++            value = getenv("FVM3DX_GRAB_DIAG");
 +        }
 +        enabled = (value && *value != '0') ? 1 : 0;
 +    }
@@ -415,14 +415,14 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 + * cursor, holds it in place and delivers nothing but deltas -- which is what a guest with
 + * a PS/2 mouse wants anyway. QEMU's SDL front end only ever switches it off, never on.
 + *
-+ * QEMU_3DFX_RELATIVE_MOUSE=0 falls back to the window grab alone.
++ * FVM3DX_RELATIVE_MOUSE=0 falls back to the window grab alone.
 + */
 +static int relative_mouse_mode_wanted(void)
 +{
 +    static int wanted = -1;
 +
 +    if (wanted < 0) {
-+        const char *value = getenv("QEMU_3DFX_RELATIVE_MOUSE");
++        const char *value = getenv("FVM3DX_RELATIVE_MOUSE");
 +        wanted = (value && *value == '0') ? 0 : 1;
 +    }
 +    return wanted;
