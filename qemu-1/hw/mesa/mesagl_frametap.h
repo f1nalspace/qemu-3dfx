@@ -31,8 +31,8 @@
  * DirectDraw through WineD3D neither swaps nor blits: it draws one quad into the window and flushes, so a draw with the window bound ends a frame at the next glFlush too.
  * A Glide frame is counted and drawn into from OpenGLide, through the hook it calls right before its swap (setConfigPresentHook).
  *
- * Switched on with QEMU_3DFX_FRAMETAP=1 (the rate), =2 (the API and the rate) or =3 (the API, the rate and frametap's own cost per frame).
- * Off, the swap hook is one predictable compare. QEMU_3DFX_FRAMETAP_DIAG=1 next to a level breaks frametap's own cost down by step, every five seconds.
+ * Switched on with FVM3DX_FRAMETAP=1 (the rate), =2 (the API and the rate) or =3 (the API, the rate and frametap's own cost per frame).
+ * Off, the swap hook is one predictable compare. FVM3DX_FRAMETAP_DIAG=1 next to a level breaks frametap's own cost down by step, every five seconds.
  * The API of a Glide frame is known on the host. Behind GL, only wine9x in the guest knows whether a game runs Direct3D or DirectDraw:
  * it names the API with a glDebugMessageInsertARB carrying FRAMETAP_API_MESSAGE_ID, once per context. A context that never does is OpenGL.
  * Every caller runs on a vCPU thread under the BQL, so there is no lock.

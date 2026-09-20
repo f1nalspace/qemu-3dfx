@@ -357,7 +357,7 @@ static void blit_restore_savemap(const void *save_map)
 }
 /* qemu-3dfx: in full screen the upscaler is the only thing between a small guest image and
  * a large drawable, and when it fails there is nothing left to look at afterwards. This
- * writes down what it saw, switched on with QEMU_3DFX_UI_DIAG=1 -- the same knob as the
+ * writes down what it saw, switched on with FVM3DX_UI_DIAG=1 -- the same knob as the
  * ui/sdl2.c diagnostics. It calls glGetError() and so eats the guest's pending error,
  * which is why it stays off by default. See docs/LOG.md.
  */
@@ -366,7 +366,7 @@ static int blit_diagnostics_enabled(void)
     static int enabled = -1;
 
     if (enabled < 0) {
-        const char *value = getenv("QEMU_3DFX_UI_DIAG");
+        const char *value = getenv("FVM3DX_UI_DIAG");
         enabled = (value && (*value != '0'))? 1:0;
     }
     return enabled;

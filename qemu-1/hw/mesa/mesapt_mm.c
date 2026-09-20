@@ -144,7 +144,7 @@ static int vtxarry_push(const vtxarry_t *varry, int cbElem, int start, int len, 
     return 0;
 }
 
-/* QEMU_3DFX_FIFO_CHECK=1: the first leaks in the FIFO data stream print the client array state, which call last
+/* FVM3DX_FIFO_CHECK=1: the first leaks in the FIFO data stream print the client array state, which call last
  * switched each array and what the last draw copied -- to find the array guest and host disagree on.
  */
 #define FIFO_CHECK_DUMP_LIMIT 3
@@ -181,7 +181,7 @@ static int fifo_check_enabled(void)
 {
     static int enabled = -1;
     if (enabled == -1) {
-        const char *setting = getenv("QEMU_3DFX_FIFO_CHECK");
+        const char *setting = getenv("FVM3DX_FIFO_CHECK");
         enabled = (setting && setting[0] != '0')? 1:0;
     }
     return enabled;
@@ -531,7 +531,7 @@ static void InitClientStates(MesaPTState *s)
     GLExtUncapped(s->mglCntxWGL);
 }
 
-/* Buffer object mapping diagnostics, switched on with QEMU_3DFX_BUFO_DIAG=1.
+/* Buffer object mapping diagnostics, switched on with FVM3DX_BUFO_DIAG=1.
  *
  * MGL_BUFO_TRACE prints a line per mapping, which is far too much for a game: the readback
  * that costs 6.2 ms of a 10.8 ms frame (docs/LOG.md [799]) happens once per frame and drowns
@@ -578,7 +578,7 @@ static int bufo_diag_enabled(void)
 {
     static int enabled = -1;
     if (enabled == -1) {
-        const char *setting = getenv("QEMU_3DFX_BUFO_DIAG");
+        const char *setting = getenv("FVM3DX_BUFO_DIAG");
         enabled = (setting && setting[0] != '0')? 1:0;
     }
     return enabled;
@@ -742,7 +742,7 @@ static void bufo_diag_final(void)
     bufoDiagWindowStartNs = 0;
 }
 
-/* Frame counter for the host side, switched on with QEMU_3DFX_FPS=1.
+/* Frame counter for the host side, switched on with FVM3DX_FPS=1.
  *
  * A frame rate measured inside the guest cannot be trusted here: QEMU runs the guest's
  * GL calls on the vCPU thread, so the guest stands still while the host draws and its
@@ -784,7 +784,7 @@ static void mesa_fps_count(const MesaFrameKind kind)
     static int enabled = -1;
 
     if (enabled == -1) {
-        const char *setting = getenv("QEMU_3DFX_FPS");
+        const char *setting = getenv("FVM3DX_FPS");
         enabled = (setting && setting[0] != '0')? 1:0;
     }
     if (!enabled)

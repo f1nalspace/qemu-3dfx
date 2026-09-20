@@ -29,7 +29,7 @@
  * guest runs -- a text log costs more than the game can afford. vm/flight.py in the project
  * repository reads the result afterwards.
  *
- * Switched on with QEMU_3DFX_FLIGHT=<file>. Off, every hook is one predictable compare.
+ * Switched on with FVM3DX_FLIGHT=<file>. Off, every hook is one predictable compare.
  * Every caller runs on a vCPU thread under the BQL, so there is no lock.
  */
 
