@@ -508,7 +508,35 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static bool guest_cursor;
  static int guest_x, guest_y;
  static SDL_Cursor *guest_sprite;
-@@ -135,6 +313,7 @@
+@@ -75,6 +253,27 @@
+     return NULL;
+ }
+ 
++/* Input for a window that no longer exists -- SDL still delivers some right after sdl_gui_restart() destroyed and rebuilt the window -- belongs to the console all the same.
++ * Dropped, it was a lost release or a lost click: Esc and mouse buttons stayed held in the guest, one motion per rebuild vanished (docs/LOG.md [1067] in the project repository).
++ * Only with a single console, where there is no doubt which one is meant, and only for input: a window event of the destroyed window must not reach the new one.
++ */
++static struct sdl2_console *get_scon_for_input(uint32_t window_id)
++{
++    static uint32_t last_reported_window;
++    struct sdl2_console *scon = get_scon_from_window(window_id);
++    const int window_is_gone = (window_id != 0) && (SDL_GetWindowFromID(window_id) == NULL);
++
++    if (scon || !window_is_gone || (sdl2_num_outputs != 1)) {
++        return scon;
++    }
++    if (grab_diagnostics_enabled() && (window_id != last_reported_window)) {
++        const uint32_t console_window = sdl2_console[0].real_window ? SDL_GetWindowID(sdl2_console[0].real_window) : 0;
++        fprintf(stderr, "fvm3dx grab: input for the destroyed window %u goes to console window %u\n", window_id, console_window);
++        last_reported_window = window_id;
++    }
++    return &sdl2_console[0];
++}
++
+ void sdl2_window_create(struct sdl2_console *scon)
+ {
+     int flags = 0;
+@@ -135,6 +334,7 @@
      if (scon->real_renderer) {
          SDL_DestroyRenderer(scon->real_renderer);
          scon->real_renderer = NULL;
@@ -516,7 +544,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      }
      SDL_DestroyWindow(scon->real_window);
      scon->real_window = NULL;
-@@ -146,9 +325,11 @@
+@@ -146,9 +346,11 @@
          return;
      }
  
@@ -528,7 +556,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  }
  
  static void sdl2_redraw(struct sdl2_console *scon)
-@@ -236,11 +417,23 @@
+@@ -236,11 +438,23 @@
      SDL_ShowCursor(SDL_ENABLE);
  }
  
@@ -553,7 +581,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          return;
      }
      /*
-@@ -249,6 +442,7 @@
+@@ -249,6 +463,7 @@
       * application (SDL bug).
       */
      if (!(SDL_GetWindowFlags(scon->real_window) & SDL_WINDOW_INPUT_FOCUS)) {
@@ -561,7 +589,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          return;
      }
      if (guest_cursor) {
-@@ -260,18 +454,31 @@
+@@ -260,18 +475,31 @@
          sdl_hide_cursor(scon);
      }
      SDL_SetWindowGrab(scon->real_window, SDL_TRUE);
@@ -594,7 +622,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static void absolute_mouse_grab(struct sdl2_console *scon)
  {
      int mouse_x, mouse_y;
-@@ -293,6 +500,7 @@
+@@ -293,6 +521,7 @@
              absolute_mouse_grab(&sdl2_console[0]);
          }
      } else if (absolute_enabled) {
@@ -602,7 +630,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          if (!gui_fullscreen) {
              sdl_grab_end(&sdl2_console[0]);
          }
-@@ -300,21 +508,37 @@
+@@ -300,21 +529,37 @@
      }
  }
  
@@ -616,9 +644,9 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +};
 +static uint32_t mouse_button_state;
 +
-+/* A key or button let go while the window is rebuilt, or after it lost the focus, is released for a window id that no longer matches, and get_scon_from_window() drops it.
-+ * The guest then holds that key for good: Esc after quitting a Glide program, a mouse button after a window change -- docs/LOG.md [997], [1002].
-+ * So everything held is let go here, the way the GTK frontend does it on focus out.
++/* A key or button let go after the window lost the focus is released where the guest never hears of it, and one let go while the window is rebuilt used to be dropped for its old window id.
++ * The guest then held that key for good: Esc after quitting a Glide program, a mouse button after a window change -- docs/LOG.md [997], [1002].
++ * So everything held is let go here, the way the GTK frontend does it on focus out; get_scon_for_input() now delivers the late releases as well.
 + */
 +static void sdl_release_guest_input(struct sdl2_console *scon, const char *reason)
 +{
@@ -652,7 +680,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      }
  
      if (qemu_input_is_absolute(scon->dcl.con)) {
-@@ -337,6 +561,25 @@
+@@ -337,6 +582,60 @@
      qemu_input_event_sync();
  }
  
@@ -675,10 +703,45 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    return mouse_button_state;
 +}
 +
++/* Every mouse button event under FVM3DX_UI_DIAG, with the window it came for and who has the focus: a click that never reaches the guest leaves its trace here (docs/LOG.md [1063]). */
++static void button_event_diag(const SDL_Event *ev, const struct sdl2_console *scon)
++{
++    SDL_Window *mouse_focus;
++    SDL_Window *keyboard_focus;
++    uint32_t console_window;
++
++    if (!grab_diagnostics_enabled()) {
++        return;
++    }
++    mouse_focus = SDL_GetMouseFocus();
++    keyboard_focus = SDL_GetKeyboardFocus();
++    console_window = sdl2_console[0].real_window ? SDL_GetWindowID(sdl2_console[0].real_window) : 0;
++    fprintf(stderr, "fvm3dx grab: button %-4s %d event-window=%u console-window=%u known=%s mouse-focus=%u keyboard-focus=%u grab=%d guest=0x%x sdl=0x%x\n",
++            (ev->type == SDL_MOUSEBUTTONDOWN) ? "down" : "up", ev->button.button, ev->button.windowID, console_window, scon ? "yes" : "NO",
++            mouse_focus ? SDL_GetWindowID(mouse_focus) : 0, keyboard_focus ? SDL_GetWindowID(keyboard_focus) : 0,
++            gui_grab, mouse_button_state, SDL_GetMouseState(NULL, NULL));
++}
++
++/* A motion that still finds no console is dropped; once per window id under FVM3DX_UI_DIAG. */
++static void dropped_motion_diag(const SDL_Event *ev)
++{
++    static uint32_t last_dropped_window = 0xFFFFFFFFu;
++    static unsigned dropped_count;
++    uint32_t console_window;
++
++    dropped_count++;
++    if (!grab_diagnostics_enabled() || (ev->motion.windowID == last_dropped_window)) {
++        return;
++    }
++    last_dropped_window = ev->motion.windowID;
++    console_window = sdl2_console[0].real_window ? SDL_GetWindowID(sdl2_console[0].real_window) : 0;
++    fprintf(stderr, "fvm3dx grab: motion dropped, event-window=%u console-window=%u (dropped so far %u)\n", ev->motion.windowID, console_window, dropped_count);
++}
++
  static void toggle_full_screen(struct sdl2_console *scon)
  {
      gui_fullscreen = !gui_fullscreen;
-@@ -351,6 +594,8 @@
+@@ -351,6 +650,8 @@
          }
          SDL_SetWindowFullscreen(scon->real_window, 0);
      }
@@ -687,7 +750,34 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      sdl2_redraw(scon);
  }
  
-@@ -483,6 +728,48 @@
+@@ -371,7 +672,7 @@
+ static void handle_keydown(SDL_Event *ev)
+ {
+     int win;
+-    struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
++    struct sdl2_console *scon = get_scon_for_input(ev->key.windowID);
+     int gui_key_modifier_pressed = get_mod_state();
+ 
+     if (!scon) {
+@@ -459,7 +760,7 @@
+ 
+ static void handle_keyup(SDL_Event *ev)
+ {
+-    struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
++    struct sdl2_console *scon = get_scon_for_input(ev->key.windowID);
+ 
+     if (!scon) {
+         return;
+@@ -471,7 +772,7 @@
+ 
+ static void handle_textinput(SDL_Event *ev)
+ {
+-    struct sdl2_console *scon = get_scon_from_window(ev->text.windowID);
++    struct sdl2_console *scon = get_scon_for_input(ev->text.windowID);
+     QemuConsole *con = scon ? scon->dcl.con : NULL;
+ 
+     if (!con) {
+@@ -483,14 +784,62 @@
      }
  }
  
@@ -736,7 +826,12 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static void handle_mousemotion(SDL_Event *ev)
  {
      int max_x, max_y;
-@@ -491,6 +778,9 @@
+-    struct sdl2_console *scon = get_scon_from_window(ev->motion.windowID);
++    struct sdl2_console *scon = get_scon_for_input(ev->motion.windowID);
+ 
++    if (!scon) {
++        dropped_motion_diag(ev);
++    }
      if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
          return;
      }
@@ -746,7 +841,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  
      if (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
          int scr_w, scr_h;
-@@ -510,13 +800,15 @@
+@@ -510,16 +859,19 @@
      }
      if (gui_grab || qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
          sdl_send_mouse_event(scon, ev->motion.xrel, ev->motion.yrel,
@@ -762,9 +857,14 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    /* Not SDL_GetMouseState(): it may still hold a button whose release was lost, see buttons_for_motion(). */
 +    int buttonstate = mouse_button_state;
      SDL_MouseButtonEvent *bev;
-     struct sdl2_console *scon = get_scon_from_window(ev->button.windowID);
+-    struct sdl2_console *scon = get_scon_from_window(ev->button.windowID);
++    struct sdl2_console *scon = get_scon_for_input(ev->button.windowID);
  
-@@ -531,6 +823,14 @@
++    button_event_diag(ev, scon);
+     if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
+         return;
+     }
+@@ -531,6 +883,14 @@
              sdl_grab_start(scon);
          }
      } else {
@@ -779,7 +879,16 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          if (ev->type == SDL_MOUSEBUTTONDOWN) {
              buttonstate |= SDL_BUTTON(bev->button);
          } else {
-@@ -568,6 +868,35 @@
+@@ -542,7 +902,7 @@
+ 
+ static void handle_mousewheel(SDL_Event *ev)
+ {
+-    struct sdl2_console *scon = get_scon_from_window(ev->wheel.windowID);
++    struct sdl2_console *scon = get_scon_for_input(ev->wheel.windowID);
+     SDL_MouseWheelEvent *wev = &ev->wheel;
+     InputButton btn;
+ 
+@@ -568,6 +928,35 @@
      qemu_input_event_sync();
  }
  
@@ -815,7 +924,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static void handle_windowevent(SDL_Event *ev)
  {
      struct sdl2_console *scon = get_scon_from_window(ev->window.windowID);
-@@ -577,6 +906,12 @@
+@@ -577,6 +966,12 @@
          return;
      }
  
@@ -828,7 +937,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      switch (ev->window.event) {
      case SDL_WINDOWEVENT_RESIZED:
          {
-@@ -586,17 +921,21 @@
+@@ -586,17 +981,21 @@
              info.height = ev->window.data2;
              dpy_set_ui_info(scon->dcl.con, &info, true);
          }
@@ -850,7 +959,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          /* If a new console window opened using a hotkey receives the
           * focus, SDL sends another KEYDOWN event to the new window,
           * closing the console window immediately after.
-@@ -607,8 +946,13 @@
+@@ -607,8 +1006,13 @@
          scon->ignore_hotkeys = get_mod_state();
          break;
      case SDL_WINDOWEVENT_FOCUS_LOST:
@@ -865,7 +974,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          }
          break;
      case SDL_WINDOWEVENT_RESTORED:
-@@ -631,8 +975,19 @@
+@@ -631,8 +1035,19 @@
              scon->hidden = true;
          }
          break;
@@ -885,7 +994,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          break;
      case SDL_WINDOWEVENT_HIDDEN:
          scon->hidden = true;
-@@ -774,6 +1129,533 @@
+@@ -774,6 +1189,533 @@
      SDL_QuitSubSystem(SDL_INIT_VIDEO);
  }
  
@@ -1419,7 +1528,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static const DisplayChangeListenerOps dcl_2d_ops = {
      .dpy_name             = "sdl2-2d",
      .dpy_gfx_update       = sdl2_2d_update,
-@@ -834,6 +1716,10 @@
+@@ -834,6 +1776,10 @@
  
      assert(o->type == DISPLAY_TYPE_SDL);
  
@@ -1430,7 +1539,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      if (SDL_GetHintBoolean("QEMU_ENABLE_SDL_LOGGING", SDL_FALSE)) {
          SDL_LogSetAllPriority(SDL_LOG_PRIORITY_VERBOSE);
      }
-@@ -926,6 +1812,7 @@
+@@ -926,6 +1872,7 @@
      g_free(dir);
      if (icon) {
          SDL_SetWindowIcon(sdl2_console[0].real_window, icon);
