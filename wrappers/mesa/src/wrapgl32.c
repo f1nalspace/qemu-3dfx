@@ -17921,6 +17921,26 @@ void load_rev()
 	}
 }
 
+/* Set once the host has accepted this build's stamp, cleared again when the pass-through is taken down. */
+static int passthroughReady;
+
+/* The host refused the stamp: give the pass-through back and forget every pointer into it. */
+static void ReleaseRefusedPassthrough(PDRVFUNC pDrv)
+{
+    memset(&fbtm[(MGLFBT_SIZE - ALIGNBO(1)) >> 2], 0, ALIGNED(1));
+    mfifo[1] = 0;
+    if (pDrv->Init()) {
+        FiniMesaPTMMBase(pDrv);
+        pDrv->Fini();
+    }
+    ptm = 0;
+    mfifo = 0;
+    mdata = 0;
+    pt = 0;
+    fbtm = 0;
+    mbufo = 0;
+}
+
 BOOL APIENTRY DllMain( HINSTANCE hModule,
         DWORD dwReason,
         LPVOID lpReserved
@@ -17953,23 +17973,12 @@ BOOL APIENTRY DllMain( HINSTANCE hModule,
                     drv.Fini();
                     refcnt = (ptm)? (char *)&mdata[1]:&cbref;
                     (*refcnt)++;
+                    passthroughReady = (ptm)? 1:0;
                     return (ptm)? TRUE:FALSE;
                 }
                 drv.Fini();
                 mdata[1] = 1;
                 refcnt = (char *)&mdata[1];
-
-#ifdef ICDDRIVER
-                {
-                    DLLModule = hModule;
-                    /* load self again to protect from unload */
-                    char sz[MAX_PATH];
-                    if(GetModuleFileName(hModule, sz, MAX_PATH))
-                    {
-                        LoadLibrary(sz);
-                    }
-                }
-#endif
             }
             else {
                 refcnt = &cbref;
@@ -17982,7 +17991,6 @@ BOOL APIENTRY DllMain( HINSTANCE hModule,
             currGLRC = 0;
             currPixFmt = 0;
             memset(procName, 0, sizeof(procName));
-            hHook = SetWindowsHookEx(WH_CALLWNDPROC, (HOOKPROC)CallWndProc, NULL, GetCurrentThreadId());
             GetModuleFileName(NULL, procName, sizeof(procName) - 1);
             DPRINTF("MesaGL Init ( %s )", procName);
 	    DPRINTF("ptm 0x%08x fbtm 0x%08x", (uint32_t)ptm, (uint32_t)fbtm);
@@ -17991,13 +17999,32 @@ BOOL APIENTRY DllMain( HINSTANCE hModule,
 	    HostRet = ptm[(0xFBCU >> 2)];
 	    if (HostRet != ((MESAVER << 8) | 0xa0UL)) {
 		DPRINTF("Error - MesaGL init failed 0x%08x", HostRet);
+		ReleaseRefusedPassthrough(&drv);
 		return FALSE;
 	    }
+            /* Hook and pin only once the host has taken this build: Windows keeps a pinned DLL whose attach failed, and callers would reach an unmapped pass-through. */
+            hHook = SetWindowsHookEx(WH_CALLWNDPROC, (HOOKPROC)CallWndProc, NULL, GetCurrentThreadId());
+#ifdef ICDDRIVER
+            {
+                DLLModule = hModule;
+                /* load self again to protect from unload */
+                char sz[MAX_PATH];
+                if(GetModuleFileName(hModule, sz, MAX_PATH))
+                {
+                    LoadLibrary(sz);
+                }
+            }
+#endif
+            passthroughReady = 1;
             DisableThreadLibraryCalls(hModule);
             break;
         case DLL_PROCESS_DETACH:
+            /* Windows calls in here after a failed attach too, when there is nothing to take down. */
+            if (!passthroughReady)
+                break;
             if (--(*refcnt))
                 break;
+            passthroughReady = 0;
             DPRINTF("MesaGL Fini %x", currGLRC);
             HookEntryHook(0, 0);
             if (currGLRC) {
