@@ -324,7 +324,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  #include "qemu/cutils.h"
  #include "ui/console.h"
  #include "ui/input.h"
-@@ -48,6 +49,183 @@
+@@ -48,6 +49,188 @@
  static SDL_Cursor *sdl_cursor_normal;
  static SDL_Cursor *sdl_cursor_hidden;
  static int absolute_enabled;
@@ -336,6 +336,11 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 + * goes missing there is nothing to look at afterwards, so this writes down every
 + * transition. Switched on with FVM3DX_GRAB_DIAG=1. See docs/LOG.md.
 + */
++/* The SDL3 name of the hint; behind sdl2-compat it reaches SDL3 unchanged. */
++#ifndef SDL_HINT_MOUSE_EMULATE_WARP_WITH_RELATIVE
++#define SDL_HINT_MOUSE_EMULATE_WARP_WITH_RELATIVE "SDL_MOUSE_EMULATE_WARP_WITH_RELATIVE"
++#endif
++
 +static int grab_diagnostics_enabled(void)
 +{
 +    static int enabled = -1;
@@ -508,7 +513,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static bool guest_cursor;
  static int guest_x, guest_y;
  static SDL_Cursor *guest_sprite;
-@@ -75,6 +253,27 @@
+@@ -75,6 +258,27 @@
      return NULL;
  }
  
@@ -536,7 +541,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  void sdl2_window_create(struct sdl2_console *scon)
  {
      int flags = 0;
-@@ -135,6 +334,7 @@
+@@ -135,6 +339,7 @@
      if (scon->real_renderer) {
          SDL_DestroyRenderer(scon->real_renderer);
          scon->real_renderer = NULL;
@@ -544,7 +549,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      }
      SDL_DestroyWindow(scon->real_window);
      scon->real_window = NULL;
-@@ -146,9 +346,11 @@
+@@ -146,9 +351,11 @@
          return;
      }
  
@@ -556,7 +561,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  }
  
  static void sdl2_redraw(struct sdl2_console *scon)
-@@ -236,11 +438,23 @@
+@@ -236,11 +443,23 @@
      SDL_ShowCursor(SDL_ENABLE);
  }
  
@@ -581,7 +586,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          return;
      }
      /*
-@@ -249,6 +463,7 @@
+@@ -249,6 +468,7 @@
       * application (SDL bug).
       */
      if (!(SDL_GetWindowFlags(scon->real_window) & SDL_WINDOW_INPUT_FOCUS)) {
@@ -589,7 +594,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          return;
      }
      if (guest_cursor) {
-@@ -260,18 +475,31 @@
+@@ -260,18 +480,31 @@
          sdl_hide_cursor(scon);
      }
      SDL_SetWindowGrab(scon->real_window, SDL_TRUE);
@@ -622,7 +627,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static void absolute_mouse_grab(struct sdl2_console *scon)
  {
      int mouse_x, mouse_y;
-@@ -293,6 +521,7 @@
+@@ -293,6 +526,7 @@
              absolute_mouse_grab(&sdl2_console[0]);
          }
      } else if (absolute_enabled) {
@@ -630,7 +635,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          if (!gui_fullscreen) {
              sdl_grab_end(&sdl2_console[0]);
          }
-@@ -300,21 +529,37 @@
+@@ -300,21 +534,37 @@
      }
  }
  
@@ -680,7 +685,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      }
  
      if (qemu_input_is_absolute(scon->dcl.con)) {
-@@ -337,6 +582,60 @@
+@@ -337,6 +587,60 @@
      qemu_input_event_sync();
  }
  
@@ -741,7 +746,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static void toggle_full_screen(struct sdl2_console *scon)
  {
      gui_fullscreen = !gui_fullscreen;
-@@ -351,6 +650,8 @@
+@@ -351,6 +655,8 @@
          }
          SDL_SetWindowFullscreen(scon->real_window, 0);
      }
@@ -750,7 +755,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      sdl2_redraw(scon);
  }
  
-@@ -371,7 +672,7 @@
+@@ -371,7 +677,7 @@
  static void handle_keydown(SDL_Event *ev)
  {
      int win;
@@ -759,7 +764,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      int gui_key_modifier_pressed = get_mod_state();
  
      if (!scon) {
-@@ -459,7 +760,7 @@
+@@ -459,7 +765,7 @@
  
  static void handle_keyup(SDL_Event *ev)
  {
@@ -768,7 +773,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  
      if (!scon) {
          return;
-@@ -471,7 +772,7 @@
+@@ -471,7 +777,7 @@
  
  static void handle_textinput(SDL_Event *ev)
  {
@@ -777,7 +782,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      QemuConsole *con = scon ? scon->dcl.con : NULL;
  
      if (!con) {
-@@ -483,14 +784,62 @@
+@@ -483,14 +789,62 @@
      }
  }
  
@@ -841,7 +846,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  
      if (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
          int scr_w, scr_h;
-@@ -510,16 +859,19 @@
+@@ -510,16 +864,19 @@
      }
      if (gui_grab || qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
          sdl_send_mouse_event(scon, ev->motion.xrel, ev->motion.yrel,
@@ -864,7 +869,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
          return;
      }
-@@ -531,6 +883,14 @@
+@@ -531,6 +888,14 @@
              sdl_grab_start(scon);
          }
      } else {
@@ -879,7 +884,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          if (ev->type == SDL_MOUSEBUTTONDOWN) {
              buttonstate |= SDL_BUTTON(bev->button);
          } else {
-@@ -542,7 +902,7 @@
+@@ -542,7 +907,7 @@
  
  static void handle_mousewheel(SDL_Event *ev)
  {
@@ -888,7 +893,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      SDL_MouseWheelEvent *wev = &ev->wheel;
      InputButton btn;
  
-@@ -568,6 +928,35 @@
+@@ -568,6 +933,35 @@
      qemu_input_event_sync();
  }
  
@@ -924,7 +929,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static void handle_windowevent(SDL_Event *ev)
  {
      struct sdl2_console *scon = get_scon_from_window(ev->window.windowID);
-@@ -577,6 +966,12 @@
+@@ -577,6 +971,12 @@
          return;
      }
  
@@ -937,7 +942,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      switch (ev->window.event) {
      case SDL_WINDOWEVENT_RESIZED:
          {
-@@ -586,17 +981,21 @@
+@@ -586,17 +986,21 @@
              info.height = ev->window.data2;
              dpy_set_ui_info(scon->dcl.con, &info, true);
          }
@@ -959,7 +964,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          /* If a new console window opened using a hotkey receives the
           * focus, SDL sends another KEYDOWN event to the new window,
           * closing the console window immediately after.
-@@ -607,8 +1006,13 @@
+@@ -607,8 +1011,13 @@
          scon->ignore_hotkeys = get_mod_state();
          break;
      case SDL_WINDOWEVENT_FOCUS_LOST:
@@ -974,7 +979,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          }
          break;
      case SDL_WINDOWEVENT_RESTORED:
-@@ -631,8 +1035,19 @@
+@@ -631,8 +1040,19 @@
              scon->hidden = true;
          }
          break;
@@ -994,7 +999,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          break;
      case SDL_WINDOWEVENT_HIDDEN:
          scon->hidden = true;
-@@ -774,6 +1189,533 @@
+@@ -774,6 +1194,533 @@
      SDL_QuitSubSystem(SDL_INIT_VIDEO);
  }
  
@@ -1528,7 +1533,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static const DisplayChangeListenerOps dcl_2d_ops = {
      .dpy_name             = "sdl2-2d",
      .dpy_gfx_update       = sdl2_2d_update,
-@@ -834,6 +1776,10 @@
+@@ -834,6 +1781,10 @@
  
      assert(o->type == DISPLAY_TYPE_SDL);
  
@@ -1539,7 +1544,21 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      if (SDL_GetHintBoolean("QEMU_ENABLE_SDL_LOGGING", SDL_FALSE)) {
          SDL_LogSetAllPriority(SDL_LOG_PRIORITY_VERBOSE);
      }
-@@ -926,6 +1872,7 @@
+@@ -851,6 +1802,13 @@
+     SDL_SetHint(SDL_HINT_ALLOW_ALT_TAB_WHILE_GRABBED, "0");
+ #endif
+     SDL_SetHint(SDL_HINT_WINDOWS_NO_CLOSE_ON_ALT_F4, "1");
++    /* qemu-3dfx: SDL3 only pretends to warp a hidden pointer once the warps come often, and keep_pointer_in_window() warps all the time.
++     * The real pointer then sticks to the window edge, and a click there never reaches QEMU (docs/LOG.md [1123]). A value in the environment still wins. */
++    SDL_SetHint(SDL_HINT_MOUSE_EMULATE_WARP_WITH_RELATIVE, "0");
++    if (grab_diagnostics_enabled()) {
++        const char *emulate_warp = SDL_GetHint(SDL_HINT_MOUSE_EMULATE_WARP_WITH_RELATIVE);
++        fprintf(stderr, "fvm3dx grab: %s=%s\n", SDL_HINT_MOUSE_EMULATE_WARP_WITH_RELATIVE, emulate_warp ? emulate_warp : "(unset)");
++    }
+     SDL_EnableScreenSaver();
+     memset(&info, 0, sizeof(info));
+     SDL_VERSION(&info.version);
+@@ -926,6 +1884,7 @@
      g_free(dir);
      if (icon) {
          SDL_SetWindowIcon(sdl2_console[0].real_window, icon);
