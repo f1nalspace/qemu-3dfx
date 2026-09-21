@@ -74,6 +74,9 @@ static void icdlog(const char *fmt, ...)
 
 	if(fa)
 	{
+		/* The thread matters: opengl32.dll keeps the current context per thread. */
+		DWORD threadId = GetCurrentThreadId();
+		fprintf(fa, "[%04lx] ", threadId);
 		va_start(args, fmt);
 		vfprintf(fa, fmt, args);
 		va_end(args);
@@ -982,7 +985,7 @@ void WINAPI mgdSetCallbackProcs(INT nProcs, PROC *pProcs)
 
 BOOL WINAPI mgdReleaseContext(HGLRC dhglrc)
 {
-	icdlog("ENTRY: mgdReleaseContext(%p)\n", dhglrc);
+	icdlog("ENTRY: mgdReleaseContext(%p) active %p\n", dhglrc, dhglrc_active);
 
 	ctx_list_t *item = ctx_list_lookup(dhglrc);
 	if(item)
@@ -1024,6 +1027,7 @@ PGLCLTPROCTABLE *WINAPI mgdSetContext(HDC hdc, HGLRC dhglrc, void *pfnSetProcTab
 		}
 	}
 	
+	icdlog("  %s, item %p, active %p\n", result ? "ok" : "FAILED", item, dhglrc_active);
 	if(result)
 	{
 		return (PGLCLTPROCTABLE*)&cpt;
@@ -1095,7 +1099,7 @@ HGLRC WINAPI mgdCreateLayerContext(HDC hdc, int iLayerPlane)
 
 BOOL WINAPI mgdDeleteContext(HGLRC dhglrc)
 {
-	icdlog("ENTRY: mgdDeleteContext\n");
+	icdlog("ENTRY: mgdDeleteContext(%p) active %p\n", dhglrc, dhglrc_active);
 	
 	ctx_list_t *item;
 	
