@@ -17071,6 +17071,13 @@ private_wglCreateContextAttribsARB(HDC hDC, HGLRC hShareContext, const int *attr
   WGL_FUNCP_RET(ret);
   /* The host answers with the slot of the new context: 0 when it started afresh and reset its client state, otherwise one sharing with another context whose client state it keeps. */
   const uint32_t hostContextSlot = argsp[1];
+#ifdef ICDDRIVER
+  /* opengl32.dll keeps a current context per thread and calls DrvSetContext only when a thread switches its own, but the host has one current context for the whole guest.
+   * A shared context therefore stands for the host's level-0 context, as on the wrapper route, so a second thread's context cannot take the first thread's drawing away (docs/LOG.md [1133]).
+   * The ICD counts the handles of one host context itself and deletes it with the last one. */
+  if (ret && hShareContext)
+      return (HGLRC)MESAGL_MAGIC;
+#endif
   if (ret) {
       if (currGLRC && hShareContext) {
           level++;
