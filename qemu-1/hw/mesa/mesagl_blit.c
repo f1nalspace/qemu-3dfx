@@ -23,6 +23,7 @@
 #include "mesagl_impl.h"
 
 int mesa_gui_fullscreen(const void *);
+void mesa_gl_takeover(void);
 void MesaRenderScaler(const uint32_t FEnum, void *args);
 
 void MesaContextAttest(const char *div, int *out)
@@ -59,6 +60,8 @@ static struct {
      * has a drawable smaller than the guest desktop, and only this says how much smaller.
      */
     int guest_client_width, guest_client_height, guest_client_changed, was_windowed_guest;
+    /* Set when the render scaler fitted the present blit of a window that never swaps; the next glFlush or glFinish hands the window to GL. */
+    int window_present_pending;
     int last_drawable_width, last_drawable_height;
     /* The copy of the guest image on the texture path, kept from frame to frame. */
     unsigned screen_texture;
@@ -96,6 +99,7 @@ static int blit_use_guest_client_size(int *v)
 enum {
     RENDER_SCALED_ENLARGED = 1,
     RENDER_SCALED_SHRUNK = 2,
+    RENDER_SCALED_WINDOW = 3,
 };
 
 /* How the guest image fits into the drawable: one scale for both axes when the aspect is kept, centred.
@@ -788,9 +792,10 @@ static void blit_paint_bars_without_swap(void)
     const int windowed_guest = blit_use_guest_client_size(v);
     const int guest_width = v[0], guest_height = v[1] & 0x7FFFU;
     const int drawable_width = v[2], drawable_height = v[3];
-    const int render_scaler_enlarged = (blit.render_scaled == RENDER_SCALED_ENLARGED);
+    const int enlarged_in_full_screen = fullscreen && (blit.render_scaled == RENDER_SCALED_ENLARGED) && !windowed_guest;
+    const int window_fitted = windowed_guest && (blit.render_scaled == RENDER_SCALED_WINDOW);
 
-    if (blit.has_swap || !fullscreen || !render_scaler_enlarged || windowed_guest || RenderScalerOff())
+    if (blit.has_swap || !(enlarged_in_full_screen || window_fitted) || RenderScalerOff())
         return;
     if (!guest_width || !guest_height || !DrawableContext())
         return;
@@ -850,6 +855,13 @@ void MesaDrawableRecheck(void)
         for (int i = 0; i < 4; i++)
             box[i] = blit.guest_viewport[i];
         scaler_diag("new surface", v, drawable_context, 0, fullscreen, 0, blit.render_scaled, box);
+    }
+    /* A window that presents without a swap never reaches MGLSwapBuffers(), where the window is handed to GL.
+     * Until then the 2D output keeps drawing the guest desktop into the same window, and over the fitted frame wherever the guest screen changes.
+     */
+    if (blit.window_present_pending) {
+        blit.window_present_pending = 0;
+        mesa_gl_takeover();
     }
     blit_paint_bars_without_swap();
 }
@@ -921,6 +933,20 @@ void MesaRenderScaler(const uint32_t FEnum, void *args)
          */
         blit_fit_box(v, blit_adj, args, box);
         blit.render_scaled = RENDER_SCALED_SHRUNK;
+        acted = 1;
+    }
+    else if (drawable_context && !framebuffer_binding && blit_adj && windowed_guest && !blit.has_swap
+            && !RenderScalerOff()) {
+        /* A window that presents with a blit into the window and never swaps -- DirectDraw through WineD3D does (docs/LOG.md [1055] in the project repository).
+         * MesaBlitScale() never runs for it, but the blit carries the finished frame, so fitting the blit is fitting the frame. Linear like the scaling blit of a swap.
+         */
+        const int blit_mask_index = 8, blit_filter_index = 9;
+        uint32_t *blit_args = args;
+        blit_fit_box(v, blit_adj, args, box);
+        if (blit_args[blit_mask_index] == GL_COLOR_BUFFER_BIT)
+            blit_args[blit_filter_index] = GL_LINEAR;
+        blit.render_scaled = RENDER_SCALED_WINDOW;
+        blit.window_present_pending = 1;
         acted = 1;
     }
     scaler_diag(scaler_what(FEnum), v, drawable_context, framebuffer_binding, fullscreen,

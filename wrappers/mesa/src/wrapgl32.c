@@ -125,6 +125,9 @@ static HWND GLwnd;
 static HHOOK hHook;
 static int currPixFmt;
 static uint32_t currDC, currGLRC;
+/* Set by the first wglSwapBuffers. A guest that swaps reports its window size there; one that never does ends its frames with glFlush or glFinish. */
+static int guestPresentsWithSwap;
+static void ReportDrawableSizeWithoutSwap(void);
 /* Handles for the host's level-0 context handed out to contexts the host created as shared ones: a context created with a share context while none was current. */
 static int sharedLevelZeroHandleCount;
 static uint32_t currPB[MAX_PBUFFER];
@@ -3793,7 +3796,7 @@ void PT_CALL glFinalCombinerInputNV(uint32_t arg0, uint32_t arg1, uint32_t arg2,
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glFinalCombinerInputNV, 4);
 }
 void PT_CALL glFinish(void) {
-    
+    ReportDrawableSizeWithoutSwap();
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glFinish;
 }
 void PT_CALL glFinishAsyncSGIX(uint32_t arg0) {
@@ -3817,7 +3820,7 @@ void PT_CALL glFinishTextureSUNX(void) {
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glFinishTextureSUNX;
 }
 void PT_CALL glFlush(void) {
-    
+    ReportDrawableSizeWithoutSwap();
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glFlush;
 }
 void PT_CALL glFlushMappedBufferRange(uint32_t arg0, uint32_t arg1, uint32_t arg2) {
@@ -17696,6 +17699,14 @@ static void ReportDrawableSize(HDC hdc)
     } while (0);
 }
 
+/* DirectDraw through WineD3D in a window presents with a blit into the window and glFlush, never with a swap, and the host fits that blit only once it knows the window (docs/LOG.md [1055] in the project repository). */
+static void ReportDrawableSizeWithoutSwap(void)
+{
+    if (guestPresentsWithSwap || !currDC)
+        return;
+    ReportDrawableSize((HDC)currDC);
+}
+
 int WINAPI wglSwapBuffers (HDC hdc)
 {
     static POINT last_pos;
@@ -17703,6 +17714,7 @@ int WINAPI wglSwapBuffers (HDC hdc)
     uint32_t ret, *swapRet = &mfifo[(MGLSHM_SIZE - ALIGNED(1)) >> 2];
     DWORD t = GetTickCount();
     CURSORINFO ci = { .cbSize = sizeof(CURSORINFO) };
+    guestPresentsWithSwap = 1;
     ReportDrawableSize(hdc);
     if (((t - timestamp) >= 16) &&
             display_device_supported() && GetCursorInfo(&ci)) {
