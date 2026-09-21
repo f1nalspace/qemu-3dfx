@@ -460,6 +460,8 @@ struct mglOptions {
     int xstrYear;
 };
 static int swapCur, swapFps, texClampFix;
+/* What CursorSyncOff,0 and CtxZeroQuirksOff,0 go back to: the values parse_options() starts from. */
+static int swapCurDefault, useZeroDefault;
 static int mapBufferInGuestOff;
 static int parse_value(const char *str, const char *tok, int *val)
 {
@@ -495,7 +497,8 @@ static int ctx0_quirks(void)
     }
     return (use_ctx0[i])? 1:0;
 }
-/* One setting, in the Name,Value form wrapgl32.ext uses. The registry feeds the same function, so the list of names stays single. */
+/* One setting, in the Name,Value form wrapgl32.ext uses. The registry feeds the same function, so the list of names stays single.
+ * An on/off switch set to 0 goes back to its default, so a later layer (apps\exe\<name>, then wrapgl32.ext) can switch off what apps\global switched on. */
 static void parse_option_line(struct mglOptions *opt, const char *line)
 {
     int i, v;
@@ -504,29 +507,29 @@ static void parse_option_line(struct mglOptions *opt, const char *line)
     i = parse_value(line, "SwapInterval,", &v);
     opt->swapInt = (i == 1)? (v & 0x03U):opt->swapInt;
     i = parse_value(line, "BufOAccelEN,", &v);
-    opt->bufoAcc = ((i == 1) && v)? 1:opt->bufoAcc;
+    opt->bufoAcc = (i == 1)? ((v)? 1:0):opt->bufoAcc;
     i = parse_value(line, "ContextMSAA,", &v);
-    opt->useMSAA = ((i == 1) && v)? ((v & 0x03U) << 2):opt->useMSAA;
+    opt->useMSAA = (i == 1)? ((v & 0x03U) << 2):opt->useMSAA;
     i = parse_value(line, "ContextSRGB,", &v);
-    opt->useSRGB = ((i == 1) && v)? 1:opt->useSRGB;
+    opt->useSRGB = (i == 1)? ((v)? 1:0):opt->useSRGB;
     i = parse_value(line, "CtxZeroQuirksOff,", &v);
-    opt->useZERO = ((i == 1) && v)? 0:opt->useZERO;
+    opt->useZERO = (i == 1)? ((v)? 0:useZeroDefault):opt->useZERO;
     i = parse_value(line, "ScalerBltFlip,", &v);
-    opt->bltFlip = ((i == 1) && v)? 0x12U:opt->bltFlip;
+    opt->bltFlip = (i == 1)? ((v)? 0x12U:0):opt->bltFlip;
     i = parse_value(line, "RenderScalerOff,", &v);
-    opt->scalerOff = ((i == 1) && v)? 2:opt->scalerOff;
+    opt->scalerOff = (i == 1)? ((v)? 2:0):opt->scalerOff;
     i = parse_value(line, "ContextVsyncOff,", &v);
-    opt->vsyncOff = ((i == 1) && v)? 1:opt->vsyncOff;
+    opt->vsyncOff = (i == 1)? ((v)? 1:0):opt->vsyncOff;
     i = parse_value(line, "ExtensionsYear,", &v);
     opt->xstrYear = (i == 1)? v:opt->xstrYear;
     i = parse_value(line, "ConformantTexClampOff,", &v);
-    texClampFix = ((i == 1) && v)? 1:texClampFix;
+    texClampFix = (i == 1)? ((v)? 1:0):texClampFix;
     i = parse_value(line, "CursorSyncOff,", &v);
-    swapCur = ((i == 1) && v)? 0:swapCur;
+    swapCur = (i == 1)? ((v)? 0:swapCurDefault):swapCur;
     i = parse_value(line, "FpsLimit,", &v);
     swapFps = (i == 1)? (v & 0x7FU):swapFps;
     i = parse_value(line, "MapBufferInGuestOff,", &v);
-    mapBufferInGuestOff = ((i == 1) && v)? 1:mapBufferInGuestOff;
+    mapBufferInGuestOff = (i == 1)? ((v)? 1:0):mapBufferInGuestOff;
 }
 
 #define FVM3DX_APPS_KEY "Software\\fvm3dx\\apps"
@@ -587,8 +590,10 @@ static void parse_options(struct mglOptions *opt)
     const char *exe_name = running_exe_name();
     memset(opt, 0, sizeof(struct mglOptions));
     /* Sync host color cursor only for Bochs SVGA */
-    swapCur = display_device_supported();
-    opt->useZERO = ctx0_quirks() << 5;
+    swapCurDefault = display_device_supported();
+    swapCur = swapCurDefault;
+    useZeroDefault = ctx0_quirks() << 5;
+    opt->useZERO = useZeroDefault;
 
     /* The registry first, the file last: wrapgl32.ext next to the EXE stays the escape hatch and overrides everything. */
     parse_options_from_key(opt, FVM3DX_APPS_KEY "\\global");
