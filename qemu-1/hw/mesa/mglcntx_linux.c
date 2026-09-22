@@ -438,7 +438,8 @@ static void MesaInitGammaRamp(void);
 
 static void RestoreHostGammaRamp(void)
 {
-    if (!xvidmode)
+    /* Without the switch the ramp was never touched, so there is nothing to restore either */
+    if (!xvidmode || !HostGammaPassthroughEnabled())
         return;
     if (!savedHostRampSize) {
         MesaInitGammaRamp();
