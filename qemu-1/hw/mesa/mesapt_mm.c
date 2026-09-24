@@ -2739,6 +2739,11 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
     const uint32_t fifo_calls_before_write = fifo_calls_run;
 
     FLIGHT_RECORD(FLIGHT_LEVEL_TRAPS, FLIGHT_TRAP_WRITE, addr, val);
+    /* The DLL register is the first thing a fresh guest process writes. What we remember of
+     * the context belongs to its predecessor, which may be gone -- docs/LOG.md [1183].
+     */
+    if ((addr == 0xFBC) && (val == 0xA0320))
+        MGLForgetCurrent();
     MGLRestoreCurrent();
 
     if (addr == 0xFBC) {

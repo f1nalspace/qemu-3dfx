@@ -517,6 +517,50 @@ static void MGLReleaseCurrent(void)
     MGLRememberCurrent(NULL, None, None, NULL);
 }
 
+/* A guest process that died takes its contexts with it, but not what we remembered of them.
+ * The next process announces itself by loading the wrapper DLL, and nothing it does can belong
+ * to the contexts of its predecessor -- docs/LOG.md [1183].
+ */
+void MGLForgetCurrent(void)
+{
+    MGLRememberCurrent(NULL, None, None, NULL);
+}
+
+/* Xlib answers an X error by printing it and calling exit(). For a GLX error that costs the
+ * whole guest -- its unwritten files included -- where the damage is one wrong frame: a drawable
+ * that the GUI rebuilt, or a context of a process that has died -- docs/LOG.md [1178], [1183].
+ * Only GLX errors are swallowed here; every other one goes the way it went before.
+ */
+static int (*previous_x_error_handler)(Display *, XErrorEvent *);
+static int glx_major_opcode;
+
+static int mesa_x_error_handler(Display *display, XErrorEvent *error)
+{
+    if (error->request_code == glx_major_opcode) {
+        char error_text[128];
+        XGetErrorText(display, error->error_code, error_text, sizeof(error_text));
+        fprintf(stderr, "fvm3dx: GLX error ignored -- %s, minor opcode %d, serial %lu\n",
+                error_text, error->minor_code, error->serial);
+        return 0;
+    }
+    if (previous_x_error_handler)
+        return previous_x_error_handler(display, error);
+    return 0;
+}
+
+void MesaXErrorTrap(void *display)
+{
+    static int trap_installed;
+    int event_base, error_base;
+
+    if (trap_installed || !display)
+        return;
+    if (!XQueryExtension((Display *)display, "GLX", &glx_major_opcode, &event_base, &error_base))
+        return;
+    previous_x_error_handler = XSetErrorHandler(mesa_x_error_handler);
+    trap_installed = 1;
+}
+
 void MGLRestoreCurrent(void)
 {
     if (!current_context)
@@ -716,6 +760,7 @@ void MGLFrametapGuestApi(const char *api_name, const int name_length)
 static int MGLPresetPixelFormat(void)
 {
     dpy = XOpenDisplay(NULL);
+    MesaXErrorTrap(dpy);
     qatomic_set(&wnd_ready, 0);
     ImplMesaGLReset();
     mesa_prepare_window(GetContextMSAA(), GL_CONTEXTALPHA, 0, &cwnd_mesagl);

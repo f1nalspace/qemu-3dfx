@@ -772,6 +772,7 @@ void MGLFuncHandler(const char *name)
 
 /* Only the GLX backend takes its context back from another pass-through on the same thread. */
 void MGLRestoreCurrent(void) { }
+void MGLForgetCurrent(void) { }
 uint32_t MGLRestoreCount(void) { return 0; }
 
 /* frametap draws only on the GLX backend so far. */

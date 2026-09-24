@@ -136,6 +136,7 @@ void conf_glide2x_window(const int, const int, const int, const int);
 void conf_glide2x_present_hook(void (*)(void));
 void glide_window_rescale(void);
 void glide_context_restore(void);
+void glide_context_forget(void);
 unsigned int glide_context_restore_count(void);
 void cwnd_glide2x(void *, void *, void *);
 int init_glide2x(const char *);

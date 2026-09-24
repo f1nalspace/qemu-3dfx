@@ -50,6 +50,8 @@ void MGLFuncHandler(const char *);
 void MGLDeleteContext(int);
 int MGLCreateContext(uint32_t);
 void MGLRestoreCurrent(void);
+void MGLForgetCurrent(void);
+void MesaXErrorTrap(void *);
 uint32_t MGLRestoreCount(void);
 
 int glwnd_ready(void);

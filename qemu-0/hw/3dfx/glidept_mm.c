@@ -939,6 +939,12 @@ static void glidept_write(void *opaque, hwaddr addr, uint64_t val, unsigned size
 {
     COMMIT_SIGN;
     GlidePTState *s = opaque;
+    /* The DLL register is the first thing a fresh guest process writes. A predecessor that died
+     * with its Glide window open left the context we remember behind, and taking that one back
+     * ends QEMU -- docs/LOG.md [1183].
+     */
+    if ((addr == 0xfbc) && ((val == 0xa0243) || (val == 0xa0211) || (val == 0xa0301)))
+        glide_context_forget();
     glide_context_restore();
 
     switch (addr) {

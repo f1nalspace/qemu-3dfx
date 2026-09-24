@@ -79,7 +79,6 @@ static void *hwnd;
 static int current_glide_res = -1;
 static int scaled_to_fullscreen = -1, scaled_to_width, scaled_to_height;
 static void glide_context_remember(void);
-static void glide_context_forget(void);
 static void glide_frame_complete(void);
 
 
@@ -474,6 +473,8 @@ static unsigned int glide_context_restores;
 
 #ifdef CONFIG_LINUX
 #include <GL/glx.h>
+/* The GLX error trap lives with the GL pass-through, hw/mesa/mglcntx_linux.c. */
+void MesaXErrorTrap(void *);
 
 static Display *glide_context_display;
 static GLXDrawable glide_context_draw, glide_context_read;
@@ -483,11 +484,15 @@ static void glide_context_remember(void)
 {
     glide_context = glXGetCurrentContext();
     glide_context_display = glXGetCurrentDisplay();
+    /* Arm the GLX error trap on this display too: a Glide game may run without a GL session,
+     * and without the trap one stale drawable or context ends QEMU -- docs/LOG.md [1183].
+     */
+    MesaXErrorTrap(glide_context_display);
     glide_context_draw = glXGetCurrentDrawable();
     glide_context_read = glXGetCurrentReadDrawable();
 }
 
-static void glide_context_forget(void)
+void glide_context_forget(void)
 {
     /* The context goes with the window, and a new one may come back at the same address. */
     MesaFrametapForget(glide_context);
@@ -514,7 +519,7 @@ static void glide_frame_complete(void)
 }
 #else
 static void glide_context_remember(void) { }
-static void glide_context_forget(void) { }
+void glide_context_forget(void) { }
 void glide_context_restore(void) { }
 /* No Glide context to draw into here: the frame is counted, nothing is drawn. */
 static void glide_frame_complete(void)
