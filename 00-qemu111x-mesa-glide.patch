@@ -1011,7 +1011,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
          break;
      case SDL_WINDOWEVENT_HIDDEN:
          scon->hidden = true;
-@@ -812,6 +1239,533 @@
+@@ -812,6 +1239,564 @@
      SDL_QuitSubSystem(SDL_INIT_VIDEO);
  }
  
@@ -1077,7 +1077,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +    int glide_on_mesa, gui_saved_res, render_pause;
 +    int res, msaa, alpha, dtimer, GLon12;
 +    int gl_takeover_pending;
-+    int mesa_on_glide;
++    int mesa_on_glide, mesa_holds_window;
 +    void *hnwnd, *opaque;
 +    void (*cwnd_fn)(void *, void *, void *);
 +} scon_cb;
@@ -1279,6 +1279,14 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +    timer_mod(s->ts, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
 +}
 +
++/* A Glide session holds the window while it presents through it: it has the callback, it saved
++ * the 2D resolution to come back to, and the takeover handed it the GL context.
++ */
++static int glide_holds_window(const struct sdl_console_cb *s)
++{
++    return (s->opaque && s->gui_saved_res && s->scon->winctx)? 1:0;
++}
++
 +void glide_prepare_window(uint32_t res, int msaa, void *opaque, void *cwnd_fn)
 +{
 +    int scr_w, scr_h;
@@ -1323,12 +1331,30 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +    s->scon = &sdl2_console[0];
 +    s->opaque = opaque;
 +    s->cwnd_fn = (void (*)(void *, void *, void *))cwnd_fn;
-+    s->mesa_on_glide = 0;
++    if (s->mesa_on_glide) {
++        /* GL borrowed this window and still draws into it -- King's Quest VIII keeps its
++         * DirectDraw device while it switches Glide on and off. Hand the window over instead
++         * of taking it down: the 2D output comes with a rebuilt window, and the next
++         * glXMakeContextCurrent on the dead drawable ends QEMU -- docs/LOG.md [1178].
++         */
++        s->mesa_on_glide = 0;
++        s->opaque = 0;
++        s->cwnd_fn = 0;
++        s->gui_saved_res = 0;
++        view_diag("the GL session keeps the window", s->scon);
++        return;
++    }
 +    if (s->gui_saved_res) {
 +        s->res = s->gui_saved_res;
 +        s->gui_saved_res = 0;
 +        if (s->ts)
 +            timer_mod(s->ts, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
++    }
++    else if (s->mesa_holds_window) {
++        /* Glide borrowed the window from a GL session that prepared it and is still drawing
++         * into it. The 2D output would land on top of that session -- docs/LOG.md [1178].
++         */
++        view_diag("the GL session keeps the window", s->scon);
 +    }
 +    else {
 +        /* Glide borrowed the window from a GL session that was still holding it, so there
@@ -1447,8 +1473,8 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +    /* A Glide session holds the window and presents through it. Preparing the window for GL
 +     * would bring the 2D output back on top of Glide and drop its callback -- docs/LOG.md [709].
 +     */
-+    const int glide_holds_window = (s->opaque && s->gui_saved_res && s->scon->winctx);
-+    if (glide_holds_window) {
++    s->mesa_holds_window = 1;
++    if (glide_holds_window(s)) {
 +        void (*mesa_window_ready)(void *, void *, void *) = (void (*)(void *, void *, void *))cwnd_fn;
 +        s->mesa_on_glide = 1;
 +        view_diag("mesapt borrows the Glide window", s->scon);
@@ -1483,8 +1509,13 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +
 +    sdl_display_valid("mesapt");
 +    s->scon = &sdl2_console[0];
-+    if (s->mesa_on_glide) {
-+        /* The Glide session still presents through the window. */
++    s->mesa_holds_window = 0;
++    /* The Glide session still presents through the window. Its callback, its saved resolution
++     * and its GL context stay as they are -- docs/LOG.md [709]. The second condition is for a
++     * guest that releases the GL window before it prepares it again, while Glide runs: without
++     * it the Glide session loses the window it holds -- docs/LOG.md [1178].
++     */
++    if (s->mesa_on_glide || glide_holds_window(s)) {
 +        s->mesa_on_glide = 0;
 +        return;
 +    }
@@ -1545,7 +1576,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
  static const DisplayChangeListenerOps dcl_2d_ops = {
      .dpy_name             = "sdl2-2d",
      .dpy_gfx_update       = sdl2_2d_update,
-@@ -908,6 +1862,10 @@
+@@ -908,6 +1893,10 @@
  
      assert(o->type == DISPLAY_TYPE_SDL);
  
@@ -1556,7 +1587,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
      if (SDL_GetHintBoolean("QEMU_ENABLE_SDL_LOGGING", SDL_FALSE)) {
          SDL_LogSetAllPriority(SDL_LOG_PRIORITY_VERBOSE);
      }
-@@ -925,7 +1883,22 @@
+@@ -925,7 +1914,22 @@
      SDL_SetHint(SDL_HINT_ALLOW_ALT_TAB_WHILE_GRABBED, "0");
  #endif
      SDL_SetHint(SDL_HINT_WINDOWS_NO_CLOSE_ON_ALT_F4, "1");
@@ -1580,7 +1611,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
      SDL_EnableScreenSaver();
      memset(&info, 0, sizeof(info));
      SDL_VERSION(&info.version);
-@@ -1002,6 +1975,7 @@
+@@ -1002,6 +2006,7 @@
      g_free(dir);
      if (icon) {
          SDL_SetWindowIcon(sdl2_console[0].real_window, icon);

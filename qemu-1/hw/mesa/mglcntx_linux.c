@@ -524,6 +524,20 @@ void MGLRestoreCurrent(void)
     const GLXContext thread_context = glXGetCurrentContext();
     if (thread_context == current_context)
         return;
+    /* The GUI may have destroyed and rebuilt the window since the guest made its context
+     * current -- docs/LOG.md [592]. Taking a dead drawable back ends QEMU: Xlib answers the
+     * GLXBadDrawable with exit(), and the driver's exit handlers then deadlock with the main
+     * thread -- docs/LOG.md [1178]. Wait for the next SetPixelFormat instead, which prepares
+     * the window again.
+     */
+    if ((current_draw == win) && (win_generation != mesa_gui_window_generation())) {
+        static GLXDrawable reported_drawable;
+        if (reported_drawable != current_draw) {
+            reported_drawable = current_draw;
+            DPRINTF("MESAGL window [native %p] is gone, the guest context stays as it is", (void *)win);
+        }
+        return;
+    }
     glXMakeContextCurrent(current_display, current_draw, current_read, current_context);
     current_context_restores++;
 }
