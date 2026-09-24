@@ -910,7 +910,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      SDL_MouseWheelEvent *wev = &ev->wheel;
      InputButton btn;
  
-@@ -568,6 +940,35 @@
+@@ -568,6 +940,51 @@
      qemu_input_event_sync();
  }
  
@@ -943,10 +943,26 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
 +    }
 +}
 +
++/* Dead keys (^ and ´ on a German keyboard) never reach the guest while SDL text input is on: the X input method takes them for a composition, and SDL sends no key event at all -- docs/LOG.md [1192].
++ * The guest takes scancodes only, so text input stays on for the text consoles alone, where the monitor and the serial console need it.
++ * The SDL2 interface knows one switch for all windows, and only the focused window gets keys, so it follows the focus.
++ */
++static void sdl_text_input_for_console(struct sdl2_console *scon)
++{
++    const bool text_console = QEMU_IS_TEXT_CONSOLE(scon->dcl.con);
++    const bool text_input_active = SDL_IsTextInputActive();
++
++    if (text_console && !text_input_active) {
++        SDL_StartTextInput();
++    } else if (!text_console && text_input_active) {
++        SDL_StopTextInput();
++    }
++}
++
  static void handle_windowevent(SDL_Event *ev)
  {
      struct sdl2_console *scon = get_scon_from_window(ev->window.windowID);
-@@ -577,6 +978,12 @@
+@@ -577,6 +994,12 @@
          return;
      }
  
@@ -959,7 +975,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      switch (ev->window.event) {
      case SDL_WINDOWEVENT_RESIZED:
          {
-@@ -586,17 +993,21 @@
+@@ -586,17 +1009,22 @@
              info.height = ev->window.data2;
              dpy_set_ui_info(scon->dcl.con, &info, true);
          }
@@ -970,6 +986,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          sdl2_redraw(scon);
          break;
      case SDL_WINDOWEVENT_FOCUS_GAINED:
++        sdl_text_input_for_console(scon);
 +        fxui_focus_gained(scon);
          /* fall through */
      case SDL_WINDOWEVENT_ENTER:
@@ -981,7 +998,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          /* If a new console window opened using a hotkey receives the
           * focus, SDL sends another KEYDOWN event to the new window,
           * closing the console window immediately after.
-@@ -607,8 +1018,13 @@
+@@ -607,8 +1035,13 @@
          scon->ignore_hotkeys = get_mod_state();
          break;
      case SDL_WINDOWEVENT_FOCUS_LOST:
@@ -996,7 +1013,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          }
          break;
      case SDL_WINDOWEVENT_RESTORED:
-@@ -631,8 +1047,19 @@
+@@ -631,8 +1064,19 @@
              scon->hidden = true;
          }
          break;
@@ -1016,7 +1033,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
          break;
      case SDL_WINDOWEVENT_HIDDEN:
          scon->hidden = true;
-@@ -774,6 +1201,593 @@
+@@ -774,6 +1218,593 @@
      SDL_QuitSubSystem(SDL_INIT_VIDEO);
  }
  
@@ -1610,7 +1627,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
  static const DisplayChangeListenerOps dcl_2d_ops = {
      .dpy_name             = "sdl2-2d",
      .dpy_gfx_update       = sdl2_2d_update,
-@@ -834,6 +1848,10 @@
+@@ -834,6 +1865,10 @@
  
      assert(o->type == DISPLAY_TYPE_SDL);
  
@@ -1621,7 +1638,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      if (SDL_GetHintBoolean("QEMU_ENABLE_SDL_LOGGING", SDL_FALSE)) {
          SDL_LogSetAllPriority(SDL_LOG_PRIORITY_VERBOSE);
      }
-@@ -851,6 +1869,13 @@
+@@ -851,6 +1886,13 @@
      SDL_SetHint(SDL_HINT_ALLOW_ALT_TAB_WHILE_GRABBED, "0");
  #endif
      SDL_SetHint(SDL_HINT_WINDOWS_NO_CLOSE_ON_ALT_F4, "1");
@@ -1635,7 +1652,7 @@ diff -Nru ../orig/qemu-9.2.2/ui/sdl2.c ./ui/sdl2.c
      SDL_EnableScreenSaver();
      memset(&info, 0, sizeof(info));
      SDL_VERSION(&info.version);
-@@ -926,6 +1951,7 @@
+@@ -926,6 +1968,7 @@
      g_free(dir);
      if (icon) {
          SDL_SetWindowIcon(sdl2_console[0].real_window, icon);
