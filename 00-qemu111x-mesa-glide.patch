@@ -753,7 +753,13 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
      sdl2_redraw(scon);
  }
  
-@@ -383,7 +689,7 @@
+@@ -380,10 +686,13 @@
+     }
+ }
+ 
++/* Ctrl+Alt+F12 -- defined with the other window handovers further down. */
++static void sdl_return_display(void);
++
  static void handle_keydown(SDL_Event *ev)
  {
      int win;
@@ -762,7 +768,18 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
      int gui_key_modifier_pressed = get_mod_state();
  
      if (!scon) {
-@@ -471,7 +777,7 @@
+@@ -432,6 +741,10 @@
+                 sdl_grab_end(scon);
+             }
+             break;
++        case SDL_SCANCODE_F12:
++            sdl_return_display();
++            scon->gui_keysym = true;
++            break;
+         case SDL_SCANCODE_0:
+             sdl2_window_resize(scon);
+             if (!scon->opengl) {
+@@ -471,7 +784,7 @@
  
  static void handle_keyup(SDL_Event *ev)
  {
@@ -771,7 +788,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
  
      if (!scon) {
          return;
-@@ -483,7 +789,7 @@
+@@ -483,7 +796,7 @@
  
  static void handle_textinput(SDL_Event *ev)
  {
@@ -780,7 +797,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
      QemuConsole *con = scon ? scon->dcl.con : NULL;
  
      if (!con) {
-@@ -495,15 +801,63 @@
+@@ -495,15 +808,63 @@
      }
  }
  
@@ -845,7 +862,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
  
      SDL_GetWindowSize(scon->real_window, &scr_w, &scr_h);
      if (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
-@@ -524,20 +878,30 @@
+@@ -524,20 +885,30 @@
      surf_h = surface_height(scon->surface);
      x = (int64_t)ev->motion.x * surf_w / scr_w;
      y = (int64_t)ev->motion.y * surf_h / scr_h;
@@ -881,7 +898,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
      if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
          return;
      }
-@@ -553,6 +917,14 @@
+@@ -553,6 +924,14 @@
              sdl_grab_start(scon);
          }
      } else {
@@ -896,7 +913,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
          if (ev->type == SDL_MOUSEBUTTONDOWN) {
              buttonstate |= SDL_BUTTON(bev->button);
          } else {
-@@ -564,7 +936,7 @@
+@@ -564,7 +943,7 @@
  
  static void handle_mousewheel(SDL_Event *ev)
  {
@@ -905,7 +922,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
      SDL_MouseWheelEvent *wev = &ev->wheel;
      InputButton btn;
  
-@@ -590,6 +962,35 @@
+@@ -590,6 +969,35 @@
      qemu_input_event_sync();
  }
  
@@ -941,7 +958,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
  static void handle_windowevent(SDL_Event *ev)
  {
      struct sdl2_console *scon = get_scon_from_window(ev->window.windowID);
-@@ -599,6 +1000,12 @@
+@@ -599,6 +1007,12 @@
          return;
      }
  
@@ -954,7 +971,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
      switch (ev->window.event) {
      case SDL_WINDOWEVENT_RESIZED:
          {
-@@ -608,17 +1015,21 @@
+@@ -608,17 +1022,21 @@
              };
              qemu_console_set_ui_info(scon->dcl.con, &info, true);
          }
@@ -976,7 +993,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
          /* If a new console window opened using a hotkey receives the
           * focus, SDL sends another KEYDOWN event to the new window,
           * closing the console window immediately after.
-@@ -629,8 +1040,13 @@
+@@ -629,8 +1047,13 @@
          scon->ignore_hotkeys = get_mod_state();
          break;
      case SDL_WINDOWEVENT_FOCUS_LOST:
@@ -991,7 +1008,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
          }
          break;
      case SDL_WINDOWEVENT_RESTORED:
-@@ -653,8 +1069,19 @@
+@@ -653,8 +1076,19 @@
              scon->hidden = true;
          }
          break;
@@ -1011,7 +1028,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
          break;
      case SDL_WINDOWEVENT_HIDDEN:
          scon->hidden = true;
-@@ -812,6 +1239,564 @@
+@@ -812,6 +1246,593 @@
      SDL_QuitSubSystem(SDL_INIT_VIDEO);
  }
  
@@ -1217,6 +1234,35 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
 +    s->ts = NULL;
 +    grab_diag("fxui_release: Ende");
 +}
++/* Ctrl+Alt+F12: give the window back to the 2D output. A guest game can die with the window
++ * still handed to its GL or Glide session -- the wrapper DLLs never unload then, the screen keeps
++ * the last frame, and the guest goes on without a picture, not even its crash dialog showing --
++ * docs/LOG.md [1185]. Everything a session end does, without the guest asking for it.
++ */
++static void sdl_return_display(void)
++{
++    struct sdl_console_cb *s = &scon_cb;
++
++    if (!s->scon)
++        s->scon = &sdl2_console[0];
++    if (!s->render_pause && !s->gl_takeover_pending) {
++        view_diag("2D output already has the window", s->scon);
++        return;
++    }
++    view_diag("2D output takes the window back", s->scon);
++    s->res = 0;
++    s->opaque = 0;
++    s->cwnd_fn = 0;
++    s->gui_saved_res = 0;
++    s->glide_on_mesa = 0;
++    s->mesa_on_glide = 0;
++    s->mesa_holds_window = 0;
++    if (!s->ts)
++        s->ts = timer_new_ms(QEMU_CLOCK_REALTIME, &sched_wndproc, s);
++    wndproc_fxui_release(s);
++    graphic_hw_passthrough(s->scon->dcl.con, s->render_pause);
++}
++
 +static void sched_wndproc(void *opaque)
 +{
 +    struct sdl_console_cb *s = opaque;
@@ -1576,7 +1622,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
  static const DisplayChangeListenerOps dcl_2d_ops = {
      .dpy_name             = "sdl2-2d",
      .dpy_gfx_update       = sdl2_2d_update,
-@@ -908,6 +1893,10 @@
+@@ -908,6 +1929,10 @@
  
      assert(o->type == DISPLAY_TYPE_SDL);
  
@@ -1587,7 +1633,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
      if (SDL_GetHintBoolean("QEMU_ENABLE_SDL_LOGGING", SDL_FALSE)) {
          SDL_LogSetAllPriority(SDL_LOG_PRIORITY_VERBOSE);
      }
-@@ -925,7 +1914,22 @@
+@@ -925,7 +1950,22 @@
      SDL_SetHint(SDL_HINT_ALLOW_ALT_TAB_WHILE_GRABBED, "0");
  #endif
      SDL_SetHint(SDL_HINT_WINDOWS_NO_CLOSE_ON_ALT_F4, "1");
@@ -1611,7 +1657,7 @@ diff -Nru ../orig/qemu-11.1.1/ui/sdl2.c ./ui/sdl2.c
      SDL_EnableScreenSaver();
      memset(&info, 0, sizeof(info));
      SDL_VERSION(&info.version);
-@@ -1002,6 +2006,7 @@
+@@ -1002,6 +2042,7 @@
      g_free(dir);
      if (icon) {
          SDL_SetWindowIcon(sdl2_console[0].real_window, icon);
