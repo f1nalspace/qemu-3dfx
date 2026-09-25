@@ -20,6 +20,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/timer.h"
+#include "qemu/main-loop.h"
 #include "ui/console.h"
 
 #include "mesagl_impl.h"
@@ -624,6 +625,8 @@ void *MesaGLGetProc(const char *proc)
  * A process that never asks for one runs without vsync, whatever its predecessor set -- docs/LOG.md [1221].
  */
 static int swap_interval_reset_pending;
+/* The swap interval the application asked for last; 0 is no vsync. */
+static int guest_swap_interval;
 
 void MGLTmpContext(void)
 {
@@ -716,6 +719,7 @@ int MGLMakeCurrent(uint32_t cntxRC, int level)
         if (ContextVsyncOff() || swap_interval_reset_pending) {
             const int val = 0;
             swap_interval_reset_pending = 0;
+            guest_swap_interval = val;
             if (xglFuncs.SwapIntervalEXT)
                 xglFuncs.SwapIntervalEXT(dpy, win, val);
             else if (xglFuncs.has_mesa_exts) {
@@ -736,6 +740,74 @@ int MGLMakeCurrent(uint32_t cntxRC, int level)
     return 0;
 }
 
+/* The guest's display has its own refresh rate: 60 Hz unless the start script says otherwise (FVM3DX_GUEST_REFRESH) -- docs/LOG.md [1230].
+ * A game that asks for vsync gets its frames on that rate: the host waits for the next slot of a fixed grid, then swaps at its own next vertical blank.
+ * FVM3DX_GUEST_REFRESH=host leaves the host's vertical blank alone in charge.
+ */
+#define GUEST_REFRESH_DEFAULT_HZ 60
+#define GUEST_REFRESH_FOLLOWS_HOST 0
+#define NANOSECONDS_PER_SECOND 1000000000LL
+
+static int64_t guest_frame_deadline_ns;
+
+static int GuestRefreshHz(void)
+{
+    static int alreadyChecked, refreshHz;
+
+    if (!alreadyChecked) {
+        const char *setting = getenv("FVM3DX_GUEST_REFRESH");
+        const int requestedHz = (setting)? atoi(setting):0;
+        if (setting && !strcmp(setting, "host"))
+            refreshHz = GUEST_REFRESH_FOLLOWS_HOST;
+        else
+            refreshHz = (requestedHz > 0)? requestedHz:GUEST_REFRESH_DEFAULT_HZ;
+        alreadyChecked = 1;
+    }
+    return refreshHz;
+}
+
+static int64_t MonotonicNanoseconds(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return ((int64_t)now.tv_sec * NANOSECONDS_PER_SECOND) + now.tv_nsec;
+}
+
+/* The vCPU thread holds the BQL during an MMIO access. A frame's worth of waiting under it would starve the main loop, and sound and display with it. */
+static void SleepUntilWithoutBQL(const int64_t deadline_ns)
+{
+    struct timespec deadline;
+    const bool bqlWasHeld = bql_locked();
+    deadline.tv_sec = deadline_ns / NANOSECONDS_PER_SECOND;
+    deadline.tv_nsec = deadline_ns % NANOSECONDS_PER_SECOND;
+    if (bqlWasHeld)
+        bql_unlock();
+    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, NULL) == EINTR)
+        ;
+    if (bqlWasHeld)
+        bql_lock();
+}
+
+static void MGLPaceToGuestRefresh(void)
+{
+    const int refreshHz = GuestRefreshHz();
+    if (!guest_swap_interval || (refreshHz == GUEST_REFRESH_FOLLOWS_HOST)) {
+        guest_frame_deadline_ns = 0;
+        return;
+    }
+    const int64_t frame_ns = (NANOSECONDS_PER_SECOND * guest_swap_interval) / refreshHz;
+    const int64_t now_ns = MonotonicNanoseconds();
+    const int64_t late_ns = now_ns - guest_frame_deadline_ns;
+    if (!guest_frame_deadline_ns || (late_ns >= frame_ns)) {
+        /* The first vsync frame, or more than a frame behind: start the grid anew instead of catching up in bursts. */
+        guest_frame_deadline_ns = now_ns + frame_ns;
+        return;
+    }
+    if (late_ns < 0)
+        SleepUntilWithoutBQL(guest_frame_deadline_ns);
+    guest_frame_deadline_ns += frame_ns;
+}
+
 int MGLSwapBuffers(void)
 {
     /* The guest presents through the window only here. A guest driver that renders
@@ -746,6 +818,7 @@ int MGLSwapBuffers(void)
     MesaBlitScale();
     const GLXContext presenting_context = glXGetCurrentContext();
     MesaFrametapSwap(presenting_context);
+    MGLPaceToGuestRefresh();
     glXSwapBuffers(dpy, win);
     return 1;
 }
@@ -959,6 +1032,7 @@ void MGLFuncHandler(const char *name)
         return;
     }
     FUNCP_HANDLER("wglSwapIntervalEXT") {
+        guest_swap_interval = argsp[0];
         if (!xglFuncs.SwapIntervalEXT && xglFuncs.has_mesa_exts) {
             uint32_t ret = 0;
             int (*GetSwapIntervalMESA)(void) =
