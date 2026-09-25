@@ -620,9 +620,15 @@ void *MesaGLGetProc(const char *proc)
     return (void *)glXGetProcAddress((const GLubyte *)proc);
 }
 
+/* GLX keeps the swap interval with the drawable, and QEMU's window outlives every guest process.
+ * A process that never asks for one runs without vsync, whatever its predecessor set -- docs/LOG.md [1221].
+ */
+static int swap_interval_reset_pending;
+
 void MGLTmpContext(void)
 {
     Display *tmpDisp = XOpenDisplay(NULL);
+    swap_interval_reset_pending = 1;
     xcstr = glXGetClientString(tmpDisp, GLX_VENDOR);
     xstr = glXQueryExtensionsString(tmpDisp, DefaultScreen(tmpDisp));
     if (find_xstr(xstr, "GLX_EXT_swap_control"))
@@ -707,8 +713,9 @@ int MGLMakeCurrent(uint32_t cntxRC, int level)
         MGLRememberCurrent(dpy, win, win, ctx[n]);
         InitMesaGLExt();
         wrContextSRGB(ContextUseSRGB());
-        if (ContextVsyncOff()) {
+        if (ContextVsyncOff() || swap_interval_reset_pending) {
             const int val = 0;
+            swap_interval_reset_pending = 0;
             if (xglFuncs.SwapIntervalEXT)
                 xglFuncs.SwapIntervalEXT(dpy, win, val);
             else if (xglFuncs.has_mesa_exts) {

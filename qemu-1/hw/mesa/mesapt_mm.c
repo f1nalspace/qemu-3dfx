@@ -2908,7 +2908,12 @@ static void mesapt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
                 s->perfs.stat();
                 do {
                     uint32_t *swapRet = (uint32_t *)(s->fifo_ptr + (MGLSHM_SIZE - ALIGNED(1)));
-                    DPRINTF_COND((SwapFpsLimit(swapRet[0]) && swapRet[0] != 0xFEU),
+                    /* The guest wrapper sends 0xFE once the application has set a swap interval. Taken as a frame rate limit, it had the wrapper wait for GetTickCount() in a Sleep(0) loop:
+                     * 64 frames per second under XP and a spinning guest core -- docs/LOG.md [473]. The host waits for the vertical blank itself, with the interval the application set -- docs/LOG.md [1221].
+                     */
+                    const uint32_t applicationSwapIntervalMark = 0xFEU;
+                    const int applicationSetSwapInterval = (swapRet[0] == applicationSwapIntervalMark);
+                    DPRINTF_COND((!applicationSetSwapInterval && SwapFpsLimit(swapRet[0])),
                             "Guest GL Swap limit [ %d FPS ]", GetFpsLimit());
                     swapRet[0] = MGLSwapBuffers()? ((GetFpsLimit() << 1) | 1):0;
 #ifdef MESA_FPS_DIAGNOSTICS
